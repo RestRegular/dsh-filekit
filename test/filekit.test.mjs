@@ -120,6 +120,17 @@ test('create, rename, move, and copy stay inside the workspace', async () => {
 
     await assert.rejects(moveEntry(root, 'archive', 'archive'), (error) => error.code === 'bad-move');
     await assert.rejects(copyEntry(root, 'archive', 'archive'), (error) => error.code === 'bad-copy');
+
+    // Pasting into a directory that already holds the name picks a free one.
+    const pasted = await copyEntry(root, 'docs/b.md', 'docs', { unique: true });
+    assert.equal(pasted.path, 'docs/b (2).md');
+    const pastedAgain = await copyEntry(root, 'docs/b.md', 'docs', { unique: true });
+    assert.equal(pastedAgain.path, 'docs/b (3).md');
+    await assert.rejects(copyEntry(root, 'docs/b.md', 'docs'), (error) => error.code === 'exists');
+
+    // Cut + paste (move) uses the same free-name rule.
+    const cut = await moveEntry(root, 'docs/b.md', 'archive', { unique: true });
+    assert.equal(cut.path, 'archive/b (2).md');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

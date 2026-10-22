@@ -1,6 +1,6 @@
 {
   "name": "@restregular/dsh-filekit",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "FileKit — 在右侧「工作区文件」面板中右键操作、拖拽移动、编辑、复制引用与可恢复删除（.dsh-trash 回收站），变更自动告知 Agent；另含独立 FileKit 文件管理页与设置页。 · Workspace file operations for the DeepSeek Harness right sidebar: context menus, drag-to-move, editor, recoverable trash, Agent change notices, a FileKit page, and settings.",
   "icon": "./icon.svg",
   "type": "module",

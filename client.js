@@ -42,6 +42,20 @@
       const React = require('react');
       const h = React.createElement;
 
+      // Harness primitives give the editor the same Shiki highlighter the
+      // built-in document preview uses. Optional: a missing module degrades to
+      // a plain textarea instead of breaking the whole plugin.
+      let primitives = undefined;
+      try {
+        primitives = require('@deepseek-ai/dsh-client-ui-primitives');
+      } catch {
+        primitives = undefined;
+      }
+      const useCodeHighlighter =
+        typeof primitives?.useCodeHighlighter === 'function' ? primitives.useCodeHighlighter : () => () => undefined;
+      const languageForPath =
+        typeof primitives?.languageForPath === 'function' ? primitives.languageForPath : () => undefined;
+
       // ------------------------------------------------------------------
       // Copy
       // ------------------------------------------------------------------
@@ -79,7 +93,10 @@
           openPreview: '打开预览',
           rename: '重命名',
           move: '移动到…',
-          copy: '复制一份',
+          copy: '复制',
+          cut: '剪切',
+          paste: '粘贴',
+          pasteHere: '粘贴到此处',
           copyRel: '复制相对路径',
           copyAbs: '复制绝对路径',
           reference: '引用到对话框',
@@ -120,6 +137,9 @@
           renamed: '已重命名',
           moved: '已移动',
           copied: '已复制',
+          cutDone: '已剪切',
+          pasted: '已粘贴',
+          pastedTo: '已粘贴到 {path}',
           deleted: '已移入回收站',
           restored: '已恢复',
           purged: '已永久删除',
@@ -216,7 +236,10 @@
           openPreview: 'Open preview',
           rename: 'Rename',
           move: 'Move to…',
-          copy: 'Duplicate',
+          copy: 'Copy',
+          cut: 'Cut',
+          paste: 'Paste',
+          pasteHere: 'Paste here',
           copyRel: 'Copy relative path',
           copyAbs: 'Copy absolute path',
           reference: 'Reference in composer',
@@ -257,6 +280,9 @@
           renamed: 'Renamed',
           moved: 'Moved',
           copied: 'Copied',
+          cutDone: 'Cut',
+          pasted: 'Pasted',
+          pastedTo: 'Pasted into {path}',
           deleted: 'Moved to the recycle bin',
           restored: 'Restored',
           purged: 'Permanently deleted',
@@ -599,6 +625,147 @@
         return h('div', { className: 'dsh-fk-toast', 'data-kind': spec.kind, role: 'status' }, spec.text);
       }
 
+      // ------------------------------------------------------------------
+      // File clipboard (copy / cut → paste)
+      // ------------------------------------------------------------------
+
+      /** Shared across both panels: copy in one, paste in the other. */
+      let fileClipboard = null;
+      const clipboardListeners = new Set();
+
+      function setFileClipboard(value) {
+        fileClipboard = value;
+        for (const listener of clipboardListeners) {
+          try {
+            listener();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      function useFileClipboard() {
+        const [value, setValue] = React.useState(fileClipboard);
+        React.useEffect(() => {
+          const listener = () => setValue(fileClipboard);
+          clipboardListeners.add(listener);
+          return () => clipboardListeners.delete(listener);
+        }, []);
+        return value;
+      }
+
+      /** Put one entry on the FileKit clipboard (no filesystem work yet). */
+      function copyToFileClipboard(root, rel, kind, mode) {
+        setFileClipboard({ mode, root, rel, kind, name: baseOf(rel) });
+        showToast(mode === 'cut' ? t('cutDone') : t('copied'), 'ok');
+      }
+
+      // ------------------------------------------------------------------
+      // Highlighted code editor
+      // ------------------------------------------------------------------
+
+      /** Above this size the editor skips highlighting so typing stays fluid. */
+      const HIGHLIGHT_MAX_CHARS = 200_000;
+
+      function CodeEditor({ value, onChange, rel, fontSize, readOnly = false }) {
+        const inputRef = React.useRef(null);
+        const preRef = React.useRef(null);
+        const [composing, setComposing] = React.useState(false);
+        const deferred = React.useDeferredValue(value);
+        const language = React.useMemo(() => languageForPath(rel), [rel]);
+        const highlight = useCodeHighlighter(language);
+        const plainLines = React.useMemo(() => String(deferred).split('\n'), [deferred]);
+        const lines = React.useMemo(() => {
+          if (typeof highlight !== 'function' || deferred.length > HIGHLIGHT_MAX_CHARS) return undefined;
+          try {
+            const result = highlight(deferred);
+            return Array.isArray(result) ? result : undefined;
+          } catch {
+            return undefined;
+          }
+        }, [deferred, highlight]);
+        const totalLines = String(value).split('\n').length;
+        const rendered = [];
+        const source = lines ?? plainLines;
+        for (let index = 0; index < Math.max(source.length, totalLines); index += 1) {
+          const line = source[index];
+          rendered.push(
+            h(
+              'div',
+              { className: 'dsh-fk-codeeditor-line', key: index },
+              Array.isArray(line)
+                ? line.map((token, tokenIndex) => h('span', { key: tokenIndex, style: token.style }, token.text))
+                : line ?? '',
+            ),
+          );
+        }
+
+        const syncScroll = (event) => {
+          const pre = preRef.current;
+          if (pre === null) return;
+          pre.scrollTop = event.currentTarget.scrollTop;
+          pre.scrollLeft = event.currentTarget.scrollLeft;
+        };
+
+        // After edits (or a highlight pass) the textarea may have scrolled under
+        // the caret; keep the painted layer on the same scroll offset.
+        React.useEffect(() => {
+          const input = inputRef.current;
+          const pre = preRef.current;
+          if (input === null || pre === null) return;
+          pre.scrollTop = input.scrollTop;
+          pre.scrollLeft = input.scrollLeft;
+        }, [value, lines]);
+
+        return h(
+          'div',
+          { className: 'dsh-fk-codeeditor' },
+          h(
+            'pre',
+            {
+              className: 'dsh-fk-codeeditor-pre',
+              ref: preRef,
+              'aria-hidden': true,
+              style: { fontSize: `${fontSize}px`, visibility: composing ? 'hidden' : 'visible' },
+            },
+            rendered,
+          ),
+          h('textarea', {
+            ref: inputRef,
+            className: 'dsh-fk-codeeditor-input',
+            value,
+            spellCheck: false,
+            readOnly,
+            wrap: 'off',
+            autoCapitalize: 'off',
+            autoCorrect: 'off',
+            autoComplete: 'off',
+            style: {
+              fontSize: `${fontSize}px`,
+              // IME composition text would be invisible through the transparent
+              // layer; show it plainly while the candidate window is open.
+              color: composing ? 'var(--dsw-alias-label-primary)' : 'transparent',
+            },
+            onChange: (event) => onChange(event.target.value),
+            onScroll: syncScroll,
+            onCompositionStart: () => setComposing(true),
+            onCompositionEnd: () => setComposing(false),
+            onKeyDown: (event) => {
+              if (readOnly || event.key !== 'Tab') return;
+              event.preventDefault();
+              const area = event.currentTarget;
+              const start = area.selectionStart;
+              const end = area.selectionEnd;
+              onChange(`${value.slice(0, start)}  ${value.slice(end)}`);
+              window.requestAnimationFrame(() => {
+                area.selectionStart = start + 2;
+                area.selectionEnd = start + 2;
+              });
+            },
+          }),
+        );
+      }
+
       function createOwnedStyle(css) {
         const el = document.createElement('style');
         el.setAttribute('data-plugin', OWNER);
@@ -676,6 +843,22 @@
             return h('svg', common, h('path', { d: 'M4 20h4L19 9l-4-4L4 16z' }), h('path', { d: 'M13.5 6.5l4 4' }));
           case 'copy':
             return h('svg', common, h('rect', { x: 9, y: 9, width: 11, height: 11, rx: 2 }), h('path', { d: 'M5 15H4V4h11v1' }));
+          case 'cut':
+            return h(
+              'svg',
+              common,
+              h('circle', { cx: 6.5, cy: 17.5, r: 2.5 }),
+              h('circle', { cx: 17.5, cy: 17.5, r: 2.5 }),
+              h('path', { d: 'M8.2 15.6L16 3M15.8 15.6L8 3' }),
+            );
+          case 'paste':
+            return h(
+              'svg',
+              common,
+              h('path', { d: 'M9 4.5h6v3H9z' }),
+              h('path', { d: 'M9 6H6.5A1.5 1.5 0 0 0 5 7.5v12A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5v-12A1.5 1.5 0 0 0 17.5 6H15' }),
+              h('path', { d: 'M9 12h6M9 16h6' }),
+            );
           case 'link':
             return h(
               'svg',
@@ -1156,6 +1339,8 @@
         const [dragging, setDragging] = React.useState(null);
         const [dropDir, setDropDir] = React.useState(null);
         const settingsSnapshot = useSettings();
+        const clipboard = useFileClipboard();
+        const canPaste = clipboard !== null && clipboard.root === root;
         const navigation = tab.navigation;
         const editorRef = React.useRef(null);
         const draftRef = React.useRef('');
@@ -1309,13 +1494,25 @@
         const mutate = async (action, successText) => {
           if (root === '') return false;
           try {
-            await action();
-            succeed(typeof successText === 'function' ? successText() : successText);
+            const result = await action();
+            succeed(typeof successText === 'function' ? successText(result) : successText);
             return true;
           } catch (failure) {
             setNotice({ kind: 'error', text: errorText(failure) });
             return false;
           }
+        };
+
+        /** Paste the FileKit clipboard into one directory; a taken name gets " (n)". */
+        const pasteInto = async (toDir) => {
+          const clip = fileClipboard;
+          if (clip === null || clip.root !== root) return false;
+          const ok = await mutate(
+            () => api(clip.mode === 'cut' ? 'move' : 'copy', { root, path: clip.rel, toDir, unique: true, sessionId }),
+            (result) => t('pastedTo', { path: result.path }),
+          );
+          if (ok && clip.mode === 'cut') setFileClipboard(null);
+          return ok;
         };
 
         const copyRelPath = async (rel) => {
@@ -1679,13 +1876,12 @@
                   'div',
                   { className: 'dsh-fk-editor' },
                   editor.truncated ? h('p', { className: 'dsh-fk-warn' }, h(Icon, { name: 'warning', size: 14 }), t('truncated')) : null,
-                  h('textarea', {
-                    className: 'dsh-fk-textarea',
+                  h(CodeEditor, {
                     value: draft,
-                    spellCheck: false,
+                    onChange: setDraft,
+                    rel: editor.rel,
+                    fontSize: settingsSnapshot.editorFontSize,
                     readOnly: editor.truncated,
-                    style: { fontSize: `${settingsSnapshot.editorFontSize}px` },
-                    onChange: (event) => setDraft(event.target.value),
                   }),
                   h(
                     'div',
@@ -1711,6 +1907,7 @@
                 className: 'dsh-fk-row',
                 'data-kind': entry.kind,
                 'data-selected': selected === entry.path,
+                'data-menu': menu !== null && menu.rel === entry.path,
                 'data-drop': dropDir === entry.path,
                 tabIndex: 0,
                 draggable: true,
@@ -1874,6 +2071,7 @@
         if (menu !== null) {
           if (menu.rel === null) {
             menuItems = [
+              ...(canPaste ? [{ label: t('paste'), icon: 'paste', onSelect: () => pasteInto(cwd) }] : []),
               { label: t('newFile'), onSelect: () => setDialog({ kind: 'create-file' }) },
               { label: t('newDir'), onSelect: () => setDialog({ kind: 'create-dir' }) },
               { separator: true },
@@ -1885,10 +2083,15 @@
               ...(menu.kind === 'file' ? [{ label: t('openPreview'), icon: 'file', onSelect: () => openPreview(menu.rel) }] : []),
               ...(menu.kind === 'directory' ? [{ label: t('newFileHere'), icon: 'filePlus', onSelect: () => setDialog({ kind: 'create-file', dir: menu.rel }) }] : []),
               ...(menu.kind === 'directory' ? [{ label: t('newDirHere'), icon: 'folderPlus', onSelect: () => setDialog({ kind: 'create-dir', dir: menu.rel }) }] : []),
+              ...(menu.kind === 'directory' ? [{ separator: true }] : []),
+              ...(menu.kind === 'directory'
+                ? [{ label: t('pasteHere'), icon: 'paste', disabled: !canPaste, onSelect: () => pasteInto(menu.rel) }]
+                : []),
               { separator: true },
               { label: t('rename'), icon: 'edit', onSelect: () => setDialog({ kind: 'rename', rel: menu.rel }) },
               { label: t('move'), icon: 'folder', onSelect: () => setDialog({ kind: 'move', rel: menu.rel, entryKind: menu.kind }) },
-              { label: t('copy'), icon: 'copy', onSelect: () => mutate(() => api('copy', { root, path: menu.rel, toDir: dirOf(menu.rel), sessionId }), t('copied')) },
+              { label: t('copy'), icon: 'copy', onSelect: () => copyToFileClipboard(root, menu.rel, menu.kind, 'copy') },
+              { label: t('cut'), icon: 'cut', onSelect: () => copyToFileClipboard(root, menu.rel, menu.kind, 'cut') },
               { separator: true },
               { label: t('copyRel'), icon: 'copy', onSelect: () => copyRelPath(menu.rel) },
               { label: t('copyAbs'), icon: 'copy', onSelect: () => copyAbsPath(menu.rel) },
@@ -1952,6 +2155,7 @@
         const { useTabInfo, sessionId, inputActions, useSessions } = props;
         const { tab } = useTabInfo();
         const settingsSnapshot = useSettings();
+        const clipboard = useFileClipboard();
         const [root, setRoot] = React.useState('');
         const [rootError, setRootError] = React.useState('');
         const [levels, setLevels] = React.useState({});
@@ -2142,8 +2346,20 @@
           });
         };
 
-        const copyEntry = (rel) =>
-          mutate('copy', { path: rel, toDir: dirOf(rel) }, t('copied'), [dirOf(rel)]);
+        /** Paste the shared clipboard into one directory of this workspace. */
+        const pasteInto = (toDir) => {
+          const clip = fileClipboard;
+          if (clip === null || clip.root !== root) return Promise.resolve(false);
+          return mutate(
+            clip.mode === 'cut' ? 'move' : 'copy',
+            { path: clip.rel, toDir, unique: true },
+            t('pasted'),
+            [dirOf(clip.rel), toDir],
+            clip.mode === 'cut' ? () => setFileClipboard(null) : undefined,
+          );
+        };
+
+        const canPaste = clipboard !== null && clipboard.root === root;
 
         const copyRelPath = async (rel) => {
           const ok = await copyText(rel);
@@ -2219,19 +2435,22 @@
         const openEntryMenu = (event, entry) => {
           event.preventDefault();
           event.stopPropagation();
-          setSelected(entry.path);
+          // The menu target is highlighted through `data-menu`; closing the menu
+          // must not leave a selection behind (the row was never "selected").
           setMenu({ x: event.clientX, y: event.clientY, rel: entry.path, kind: entry.kind, name: entry.name });
         };
 
         const openBlankMenu = (event) => {
           if (typeof event.target.closest === 'function' && event.target.closest('.dsh-fk-row, .dsh-fk-trow') !== null) return;
           event.preventDefault();
+          setSelected(null);
           setMenu({ x: event.clientX, y: event.clientY, rel: null, kind: 'directory' });
         };
 
         const menuItems = [];
         if (menu !== null) {
           if (menu.rel === null) {
+            if (canPaste) menuItems.push({ label: t('paste'), icon: 'paste', onSelect: () => void pasteInto('') });
             menuItems.push(
               { label: t('newFile'), icon: 'filePlus', onSelect: () => setDialog({ kind: 'create-file', dir: '' }) },
               { label: t('newDir'), icon: 'folderPlus', onSelect: () => setDialog({ kind: 'create-dir', dir: '' }) },
@@ -2250,12 +2469,14 @@
             if (isDir) {
               menuItems.push({ label: t('newFileHere'), icon: 'filePlus', onSelect: () => setDialog({ kind: 'create-file', dir: menu.rel }) });
               menuItems.push({ label: t('newDirHere'), icon: 'folderPlus', onSelect: () => setDialog({ kind: 'create-dir', dir: menu.rel }) });
+              menuItems.push({ label: t('pasteHere'), icon: 'paste', disabled: !canPaste, onSelect: () => void pasteInto(menu.rel) });
               menuItems.push({ separator: true });
             }
             menuItems.push(
               { label: t('rename'), icon: 'edit', onSelect: () => setDialog({ kind: 'rename', rel: menu.rel, entryKind: menu.kind }) },
               { label: t('move'), icon: 'folder', onSelect: () => setDialog({ kind: 'move', rel: menu.rel, entryKind: menu.kind }) },
-              { label: t('copy'), icon: 'copy', onSelect: () => void copyEntry(menu.rel) },
+              { label: t('copy'), icon: 'copy', onSelect: () => copyToFileClipboard(root, menu.rel, menu.kind, 'copy') },
+              { label: t('cut'), icon: 'cut', onSelect: () => copyToFileClipboard(root, menu.rel, menu.kind, 'cut') },
               { separator: true },
               { label: t('copyRel'), icon: 'copy', onSelect: () => void copyRelPath(menu.rel) },
               { label: t('copyAbs'), icon: 'copy', onSelect: () => void copyAbsPath(menu.rel) },
@@ -2351,6 +2572,7 @@
                     className: 'dsh-fk-trow',
                     'data-kind': entry.kind,
                     'data-selected': selected === entry.path,
+                    'data-menu': menu !== null && menu.rel === entry.path,
                     'data-drop': dropDir === entry.path,
                     role: 'treeitem',
                     'aria-expanded': isDir ? open : undefined,
@@ -2853,10 +3075,10 @@
       // ------------------------------------------------------------------
 
       const CSS = `
-:root{--dsh-fk-gold:#f5b83d;--dsh-fk-orange:#f4511e;--dsh-fk-grad:linear-gradient(135deg,#f7c948 0%,#f4932a 52%,#f4511e 100%);--dsh-fk-dir:#c47a12;--dsh-fk-soft:rgb(244 81 30/.12);--dsh-fk-editor-font:12px}
+:root{--dsh-fk-gold:#f5b83d;--dsh-fk-orange:#f4511e;--dsh-fk-grad:linear-gradient(135deg,#f7c948 0%,#f4932a 52%,#f4511e 100%);--dsh-fk-dir:#c47a12;--dsh-fk-soft:rgb(244 81 30/.12);--dsh-fk-hover:var(--dsw-alias-interactive-bg-hover,rgb(0 0 0/.055));--dsh-fk-active:var(--dsw-alias-interactive-bg-active,rgb(0 0 0/.09));--dsh-fk-editor-font:12px}
 body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-tool{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none}
-.dsh-fk-tool:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsh-fk-orange)}
+.dsh-fk-tool:hover{background:var(--dsh-fk-hover);color:var(--dsh-fk-orange)}
 .dsh-fk-doc-actions{display:inline-flex;align-items:center;gap:1px;flex:none}
 .dsh-fk-tab{position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-height:0;overflow:hidden;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;background:var(--dsw-alias-bg-base)}
 .dsh-fk-tabstatus{display:flex;flex-direction:column;gap:12px;align-items:flex-start;justify-content:center;height:100%;padding:24px}
@@ -2869,26 +3091,27 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-toolbar{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none;flex-wrap:wrap}
 .dsh-fk-crumbs{display:flex;align-items:center;gap:1px;min-width:0;flex:1;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:12px}
 .dsh-fk-crumb{display:inline-flex;align-items:center;gap:4px;max-width:220px;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dsh-fk-crumb:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.dsh-fk-crumb:hover{background:var(--dsh-fk-hover);color:var(--dsw-alias-label-primary)}
 .dsh-fk-crumb[data-drop=true]{background:var(--dsh-fk-soft);box-shadow:inset 0 0 0 1px var(--dsh-fk-orange);color:var(--dsh-fk-orange)}
 .dsh-fk-crumb-current{color:var(--dsw-alias-label-primary);font-weight:500;cursor:default}
 .dsh-fk-crumb-sep{opacity:.5}
 .dsh-fk-toolbar-actions{display:flex;align-items:center;gap:4px;flex:none}
 .dsh-fk-btn{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
-.dsh-fk-btn:hover{background:var(--dsw-alias-bg-layer-2)}
+.dsh-fk-btn:hover{background:var(--dsh-fk-hover)}
 .dsh-fk-btn:disabled{opacity:.45;cursor:default}
 .dsh-fk-btn-primary{background:var(--dsh-fk-grad);border-color:transparent;color:#fff;box-shadow:0 1px 6px rgb(244 81 30/.25)}
 .dsh-fk-btn-primary:hover{filter:brightness(1.05);background:var(--dsh-fk-grad)}
 .dsh-fk-btn-danger{background:var(--dsw-alias-state-error-primary);border-color:transparent;color:#fff}
 .dsh-fk-btn-danger:hover{filter:brightness(1.06);background:var(--dsw-alias-state-error-primary)}
 .dsh-fk-iconbtn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none}
-.dsh-fk-iconbtn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsh-fk-orange)}
+.dsh-fk-iconbtn:hover{background:var(--dsh-fk-hover);color:var(--dsh-fk-orange)}
 .dsh-fk-iconbtn:disabled{opacity:.4;cursor:default}
 .dsh-fk-iconbtn[data-danger=true]:hover{color:var(--dsw-alias-state-error-primary)}
 .dsh-fk-body{flex:1;min-height:0;overflow:auto;padding:4px 6px 10px}
 .dsh-fk-row{display:flex;align-items:center;gap:8px;min-height:32px;padding:3px 6px;border-radius:7px;cursor:pointer;outline:none}
-.dsh-fk-row:hover,.dsh-fk-row:focus-visible{background:var(--dsw-alias-bg-layer-2)}
-.dsh-fk-row[data-selected=true]{background:var(--dsh-fk-soft)}
+.dsh-fk-row:hover{background:var(--dsh-fk-hover)}
+.dsh-fk-row[data-menu=true],.dsh-fk-row[data-selected=true]{background:var(--dsh-fk-active);box-shadow:inset 2px 0 0 var(--dsh-fk-orange)}
+.dsh-fk-row:focus-visible{outline:1.5px solid var(--dsh-fk-orange);outline-offset:-2px}
 .dsh-fk-row[data-drop=true]{outline:1.5px dashed var(--dsh-fk-orange);outline-offset:-2px;background:var(--dsh-fk-soft)}
 .dsh-fk-row-static{cursor:default}
 .dsh-fk-rowicon{display:flex;color:var(--dsw-alias-label-secondary);flex:none}
@@ -2901,8 +3124,12 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-row:hover .dsh-fk-rowactions,.dsh-fk-row:focus-within .dsh-fk-rowactions{opacity:1}
 @media (hover:none){.dsh-fk-rowactions{opacity:1}}
 .dsh-fk-editor{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:10px 12px 12px}
-.dsh-fk-textarea{flex:1;min-height:160px;width:100%;resize:none;box-sizing:border-box;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:var(--dsh-fk-editor-font)/1.62 var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);outline:none;tab-size:2}
-.dsh-fk-textarea:focus{border-color:var(--dsh-fk-orange)}
+.dsh-fk-codeeditor{position:relative;flex:1;min-height:160px;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base)}
+.dsh-fk-codeeditor:focus-within{border-color:var(--dsh-fk-orange)}
+.dsh-fk-codeeditor-pre{position:absolute;inset:0;margin:0;padding:10px 12px;overflow:hidden;pointer-events:none;font:var(--dsh-fk-editor-font)/1.62 var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);white-space:pre;tab-size:2;color:var(--dsw-alias-label-primary)}
+.dsh-fk-codeeditor-line{min-height:1.62em;white-space:pre}
+.dsh-fk-codeeditor-input{position:absolute;inset:0;box-sizing:border-box;width:100%;height:100%;margin:0;padding:10px 12px;border:0;resize:none;background:transparent;color:transparent;caret-color:var(--dsw-alias-label-primary);font:var(--dsh-fk-editor-font)/1.62 var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);white-space:pre;overflow:auto;tab-size:2;outline:none}
+.dsh-fk-codeeditor-input::selection{background:rgb(244 81 30/.24)}
 .dsh-fk-editor-meta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dsw-alias-label-secondary);flex:none}
 .dsh-fk-badge{display:inline-flex;align-items:center;height:18px;padding:0 7px;margin-left:6px;border-radius:9px;background:var(--dsh-fk-grad);color:#fff;font-size:10px;font-weight:600}
 .dsh-fk-warn{display:flex;align-items:center;gap:6px;margin:0;padding:7px 10px;border-radius:7px;background:var(--dsh-fk-soft);color:var(--dsw-alias-state-warn-primary);font-size:12px}
@@ -2926,11 +3153,11 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-dialog-crumbs{flex:none;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:6px}
 .dsh-fk-picklist{display:flex;flex-direction:column;gap:2px;max-height:260px;overflow:auto;padding:2px}
 .dsh-fk-pickrow{display:flex;align-items:center;gap:8px;min-height:32px;padding:4px 8px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;text-align:left;cursor:pointer}
-.dsh-fk-pickrow:hover{background:var(--dsw-alias-bg-layer-2)}
+.dsh-fk-pickrow:hover{background:var(--dsh-fk-hover)}
 .dsh-fk-scrim{position:fixed;inset:0;z-index:1300}
 .dsh-fk-menu{position:fixed;z-index:1301;display:flex;flex-direction:column;gap:1px;padding:5px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-overlay);box-shadow:0 14px 40px rgb(0 0 0/.26)}
 .dsh-fk-menu button{display:flex;align-items:center;gap:8px;width:100%;padding:6px 9px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dsh-fk-menu button:hover{background:var(--dsw-alias-bg-layer-2)}
+.dsh-fk-menu button:hover{background:var(--dsh-fk-hover)}
 .dsh-fk-menu button:disabled{opacity:.45;cursor:default}
 .dsh-fk-menu button[data-danger=true]{color:var(--dsw-alias-state-error-primary)}
 .dsh-fk-menulabel{overflow:hidden;text-overflow:ellipsis}
@@ -2942,14 +3169,15 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-filestab{background:transparent}
 .dsh-fk-treehead{display:flex;align-items:center;gap:6px;padding:7px 8px 7px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none}
 .dsh-fk-rootpath{display:flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:4px 7px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
-.dsh-fk-rootpath:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.dsh-fk-rootpath:hover{background:var(--dsh-fk-hover);color:var(--dsw-alias-label-primary)}
 .dsh-fk-rootpath[data-drop=true]{background:var(--dsh-fk-soft);box-shadow:inset 0 0 0 1px var(--dsh-fk-orange);color:var(--dsh-fk-orange)}
 .dsh-fk-rootpathtext{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-fk-treebody{position:relative;flex:1;min-height:0;overflow:auto;padding:4px 5px 22px}
 .dsh-fk-tlevel{display:flex;flex-direction:column;gap:0}
 .dsh-fk-trow{display:flex;align-items:center;gap:5px;min-height:26px;padding:2px 6px 2px 5px;border-radius:6px;cursor:pointer;outline:none;user-select:none}
-.dsh-fk-trow:hover,.dsh-fk-trow:focus-visible{background:var(--dsw-alias-bg-layer-2)}
-.dsh-fk-trow[data-selected=true]{background:var(--dsh-fk-soft)}
+.dsh-fk-trow:hover{background:var(--dsh-fk-hover)}
+.dsh-fk-trow[data-menu=true],.dsh-fk-trow[data-selected=true]{background:var(--dsh-fk-active);box-shadow:inset 2px 0 0 var(--dsh-fk-orange)}
+.dsh-fk-trow:focus-visible{outline:1.5px solid var(--dsh-fk-orange);outline-offset:-2px}
 .dsh-fk-trow[data-drop=true]{outline:1.5px dashed var(--dsh-fk-orange);outline-offset:-2px;background:var(--dsh-fk-soft)}
 .dsh-fk-trow[data-kind=directory] .dsh-fk-trowname{font-weight:500}
 .dsh-fk-tchev{display:flex;align-items:center;justify-content:center;width:13px;flex:none;color:var(--dsw-alias-label-tertiary,#8b8b8b)}
@@ -2992,7 +3220,7 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-switch[data-on=true] .dsh-fk-switchknob{left:19px}
 .dsh-fk-segmented{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;flex:none}
 .dsh-fk-segment{padding:4px 9px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
-.dsh-fk-segment:hover{background:var(--dsw-alias-bg-layer-2)}
+.dsh-fk-segment:hover{background:var(--dsh-fk-hover)}
 .dsh-fk-segment[data-on=true]{background:var(--dsh-fk-grad);color:#fff}
 .dsh-fk-fontpicker{display:flex;align-items:center;gap:10px;flex:none}
 .dsh-fk-range{width:130px;accent-color:var(--dsh-fk-orange)}

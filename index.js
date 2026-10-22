@@ -38,7 +38,7 @@ import {
 const ROUTE = '/dsh-filekit';
 
 /** Plugin version mirrored in package.json. */
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 
 /** Request body cap: larger than the editor's text cap, small enough to stay sane. */
 const BODY_LIMIT = 16 * 1024 * 1024;
@@ -272,12 +272,12 @@ async function runOperation(ctx, op, args) {
     }
     case 'move': {
       const root = await resolveRequestRoot(ctx, args);
-      const result = await moveEntry(root, args.path, args.toDir);
+      const result = await moveEntry(root, args.path, args.toDir, { unique: args.unique === true });
       return { ...result, change: { kind: 'move', ...result } };
     }
     case 'copy': {
       const root = await resolveRequestRoot(ctx, args);
-      const result = await copyEntry(root, args.path, args.toDir);
+      const result = await copyEntry(root, args.path, args.toDir, { unique: args.unique === true });
       return { ...result, change: { kind: 'copy', ...result } };
     }
     case 'delete': {
