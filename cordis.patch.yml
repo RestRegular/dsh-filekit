@@ -1,0 +1,10 @@
+# dsh-filekit bundle patch: inserts the Host plugin (the `filekit` model tool
+# and the same-origin loopback route `/dsh-filekit/api`) and the Client plugin
+# (the enhanced workspace-files page, the FileKit page, its guide button,
+# document-header actions, and the FileKit settings page).
+#
+# `name` must be byte-for-byte the package.json name: the client module graph
+# locates the package by the Loader row name.
+- insert:
+    - id: dsh-filekit
+      name: '@restregular/dsh-filekit'

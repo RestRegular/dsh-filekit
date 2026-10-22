@@ -1,0 +1,67 @@
+{
+  "name": "@restregular/dsh-filekit",
+  "version": "0.2.1",
+  "description": "FileKit — 在右侧「工作区文件」面板中右键操作、拖拽移动、编辑、复制引用与可恢复删除（.dsh-trash 回收站），变更自动告知 Agent；另含独立 FileKit 文件管理页与设置页。 · Workspace file operations for the DeepSeek Harness right sidebar: context menus, drag-to-move, editor, recoverable trash, Agent change notices, a FileKit page, and settings.",
+  "icon": "./icon.svg",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/",
+    "locale/*.json",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-files",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RestRegular/dsh-filekit.git"
+  },
+  "homepage": "https://github.com/RestRegular/dsh-filekit#readme",
+  "bugs": {
+    "url": "https://github.com/RestRegular/dsh-filekit/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "files",
+    "file-manager",
+    "workspace",
+    "trash",
+    "editor"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

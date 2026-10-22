@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "FileKit file tools",
+    "description": "Right-click, drag, edit, and recoverably delete workspace files in the right sidebar, with changes reported to the Agent."
+  }
+}
