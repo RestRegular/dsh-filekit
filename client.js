@@ -32,6 +32,11 @@
   const FILEKIT_ID = '@restregular/dsh-filekit';
   const FILES_KIND = 'files';
   const FILEKIT_KIND = 'filekit';
+  const EDITOR_KIND = 'filekit-edit';
+  /** Identity of the per-file editor tab type and its body cell. */
+  const EDITOR_ID = '@restregular/dsh-filekit/editor';
+  /** Resource scheme for editor tabs; the address carries the file, so it survives restarts. */
+  const EDITOR_PREFIX = 'dsh-resource://filekit-edit/session/';
 
   const factories = window.__ModuleLoader__?.factories;
   if (factories !== undefined && typeof factories.has === 'function' && factories.has(MODULE_ID)) return;
@@ -126,6 +131,9 @@
           emptyHint: '回收站里的所有条目都会被永久删除，无法恢复。',
           discardTitle: '放弃未保存的修改？',
           discardConfirm: '放弃修改',
+          discardHint: '放弃后该标签页会切换回文件预览。',
+          editorTab: '编辑',
+          editorNoFile: '这个标签页没有要编辑的文件。',
           dirty: '未保存',
           discard: '放弃修改',
           binary: '这是二进制文件，不能用文本编辑器打开。',
@@ -269,6 +277,9 @@
           emptyHint: 'Every entry in the recycle bin is permanently deleted; this cannot be undone.',
           discardTitle: 'Discard unsaved changes?',
           discardConfirm: 'Discard',
+          discardHint: 'Discarding switches this tab back to the file preview.',
+          editorTab: 'Edit',
+          editorNoFile: 'This tab has no file to edit.',
           dirty: 'Unsaved',
           discard: 'Discard',
           binary: 'This is a binary file; the text editor cannot open it.',
@@ -543,6 +554,26 @@
         return 'dsh-resource://file/session/' + id + '/' + rel.split('/').map((part) => encodeURIComponent(part)).join('/');
       }
 
+      /** Address of a FileKit editor tab; unique per session+file, and persisted as its contentId. */
+      function editorAddress(sessionId, rel) {
+        return EDITOR_PREFIX + encodeURIComponent(String(sessionId)) + '/' + rel.split('/').map((part) => encodeURIComponent(part)).join('/');
+      }
+
+      /** Read the file out of an editor tab address; `undefined` for any other resource. */
+      function parseEditorAddress(address) {
+        if (typeof address !== 'string' || !address.startsWith(EDITOR_PREFIX)) return undefined;
+        const rest = address.slice(EDITOR_PREFIX.length);
+        const slash = rest.indexOf('/');
+        if (slash <= 0 || slash === rest.length - 1) return undefined;
+        try {
+          const sessionId = decodeURIComponent(rest.slice(0, slash));
+          const rel = rest.slice(slash + 1).split('/').map((part) => decodeURIComponent(part)).join('/');
+          return { sessionId, rel };
+        } catch {
+          return undefined;
+        }
+      }
+
       function formatBytes(size) {
         if (typeof size !== 'number' || !Number.isFinite(size)) return '';
         if (size < 1024) return `${size} B`;
@@ -766,6 +797,264 @@
         );
       }
 
+      /**
+       * One per-file editor tab. Saving (or discarding) swaps this tab for the
+       * file's preview tab, so the pair behave as one page with two modes.
+       */
+      function FileEditorTab(props) {
+        const { useTabInfo, sessionId, inputActions } = props;
+        const { tab } = useTabInfo();
+        const settingsSnapshot = useSettings();
+        const params = tab.navigation?.params;
+        // Navigation params carry the file on first open; a restored layout only
+        // has the tab's contentId, which is the editor address.
+        const rel =
+          typeof params?.rel === 'string' && params.rel !== '' ? params.rel : parseEditorAddress(tab.contentId)?.rel ?? '';
+        const [root, setRoot] = React.useState('');
+        const [error, setError] = React.useState('');
+        const [editor, setEditor] = React.useState(null);
+        const [draft, setDraft] = React.useState('');
+        const [saving, setSaving] = React.useState(false);
+        const [discardOpen, setDiscardOpen] = React.useState(false);
+        const draftRef = React.useRef('');
+        const savingRef = React.useRef(false);
+        const saveRef = React.useRef(null);
+        draftRef.current = draft;
+        const dirty = editor !== null && draft !== editor.original;
+
+        // The tab chip shows the unsaved marker through this flag.
+        React.useEffect(() => {
+          setTabDirty(tab.id, dirty);
+          return () => setTabDirty(tab.id, false);
+        }, [tab.id, dirty]);
+
+        React.useEffect(() => {
+          if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+          let dead = false;
+          api('workspace', { sessionId })
+            .then((data) => {
+              if (!dead) setRoot(data.root);
+            })
+            .catch((failure) => {
+              if (!dead) setError(errorText(failure));
+            });
+          return () => {
+            dead = true;
+          };
+        }, [sessionId]);
+
+        React.useEffect(() => {
+          if (root === '' || rel === '') return undefined;
+          let dead = false;
+          setEditor(null);
+          setDraft('');
+          setError('');
+          api('read', { root, path: rel, sessionId })
+            .then((data) => {
+              if (dead) return;
+              if (data.binary === true) {
+                setError(t('binary'));
+                return;
+              }
+              setEditor({
+                rel,
+                original: data.text,
+                mtimeMs: data.mtimeMs,
+                size: data.size,
+                truncated: data.truncated === true,
+              });
+              setDraft(data.text);
+            })
+            .catch((failure) => {
+              if (!dead) setError(errorText(failure));
+            });
+          return () => {
+            dead = true;
+          };
+        }, [root, rel, sessionId]);
+
+        const switchToPreview = () => {
+          setTabDirty(tab.id, false);
+          try {
+            tab.actions.openResource(fileAddress(sessionId, rel), { replaceTab: true });
+          } catch (failure) {
+            showToast(errorText(failure), 'error');
+          }
+        };
+
+        const save = async () => {
+          const current = editor;
+          const text = draftRef.current;
+          if (current === null || savingRef.current || current.truncated || text === current.original) return;
+          savingRef.current = true;
+          setSaving(true);
+          try {
+            await api('write', { root, path: rel, content: text, expectedMtimeMs: current.mtimeMs, sessionId });
+            showToast(t('saved'));
+            switchToPreview();
+          } catch (failure) {
+            setError(errorText(failure));
+            showToast(errorText(failure), 'error');
+          } finally {
+            savingRef.current = false;
+            setSaving(false);
+          }
+        };
+        saveRef.current = save;
+
+        const discard = () => {
+          if (!dirty) {
+            switchToPreview();
+            return;
+          }
+          setDiscardOpen(true);
+        };
+
+        React.useEffect(() => {
+          const onKeyDown = (event) => {
+            if (tab.visible !== true) return;
+            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && editor !== null) {
+              event.preventDefault();
+              saveRef.current?.();
+            }
+          };
+          window.addEventListener('keydown', onKeyDown);
+          return () => window.removeEventListener('keydown', onKeyDown);
+        }, [editor, tab.visible]);
+
+        const copyRelPath = async () => {
+          const ok = await copyText(rel);
+          showToast(ok ? t('copiedPath') : t('error.internal'), ok ? 'ok' : 'error');
+        };
+
+        const referenceRel = async () => {
+          const text = `@${rel} `;
+          if (inputActions !== undefined && typeof inputActions.captureInsertion === 'function' && typeof inputActions.insertText === 'function') {
+            try {
+              const span = inputActions.captureInsertion();
+              if (inputActions.insertText(text, span) === true) {
+                inputActions.persistDraft?.();
+                showToast(t('referenced'));
+                return;
+              }
+            } catch {
+              /* fall back to the clipboard */
+            }
+          }
+          const ok = await copyText(text);
+          showToast(ok ? t('referencedCopied') : t('error.internal'), ok ? 'ok' : 'error');
+        };
+
+        if (params === undefined) {
+          return h('div', { className: 'dsh-fk-tabstatus' }, h('p', { className: 'dsh-fk-hint' }, t('loading')));
+        }
+        if (rel === '') {
+          return h('div', { className: 'dsh-fk-tabstatus' }, h('p', { className: 'dsh-fk-error' }, t('editorNoFile')));
+        }
+        if (error !== '' && editor === null) {
+          return h(
+            'div',
+            { className: 'dsh-fk-tabstatus' },
+            h('p', { className: 'dsh-fk-error' }, error),
+            h('button', { type: 'button', className: 'dsh-fk-btn', onClick: switchToPreview }, t('openPreview')),
+          );
+        }
+        if (editor === null) {
+          return h('div', { className: 'dsh-fk-tabstatus' }, h('p', { className: 'dsh-fk-hint' }, t('loading')));
+        }
+
+        return h(
+          'div',
+          { className: 'dsh-fk-tab' },
+          h(
+            'div',
+            { className: 'dsh-fk-editorhead' },
+            h(
+              'div',
+              { className: 'dsh-fk-editorpath', title: joinAbs(root, rel) },
+              h(Icon, { name: 'file', size: 15 }),
+              h('span', { className: 'dsh-fk-editorpathname' }, baseOf(rel)),
+              h('span', { className: 'dsh-fk-editorpathdir' }, dirOf(rel)),
+            ),
+            h('span', { className: 'dsh-fk-spacer' }),
+            dirty ? h('span', { className: 'dsh-fk-badge' }, t('dirty')) : null,
+            h(
+              'span',
+              { className: 'dsh-fk-iconactions' },
+              h(IconButton, { icon: 'copy', label: t('copyRel'), onClick: copyRelPath }),
+              h(IconButton, { icon: 'link', label: t('reference'), onClick: referenceRel }),
+              h(IconButton, { icon: 'file', label: t('openPreview'), onClick: switchToPreview, disabled: saving }),
+              h(IconButton, {
+                icon: 'close',
+                label: t('discard'),
+                onClick: discard,
+                disabled: saving || !dirty,
+              }),
+              h(IconButton, {
+                icon: 'check',
+                label: saving ? t('saving') : t('save'),
+                onClick: save,
+                disabled: saving || !dirty || editor.truncated,
+              }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'dsh-fk-editor' },
+            editor.truncated ? h('p', { className: 'dsh-fk-warn' }, h(Icon, { name: 'warning', size: 14 }), t('truncated')) : null,
+            h(CodeEditor, {
+              value: draft,
+              onChange: setDraft,
+              rel,
+              fontSize: settingsSnapshot.editorFontSize,
+              readOnly: editor.truncated,
+            }),
+            h(
+              'div',
+              { className: 'dsh-fk-editor-meta' },
+              h('span', null, `${formatBytes(editor.size)}${dirty ? ` → ${formatBytes(new TextEncoder().encode(draft).length)}` : ''}`),
+              h('span', { className: 'dsh-fk-spacer' }),
+              h('span', null, t('modified')),
+              h('span', null, new Date(editor.mtimeMs).toLocaleString()),
+            ),
+          ),
+          error !== '' ? h('div', { className: 'dsh-fk-status', 'data-kind': 'error' }, error) : null,
+          discardOpen
+            ? h(ConfirmDialog, {
+                key: 'discard',
+                title: t('discardTitle'),
+                text: rel,
+                hint: t('discardHint'),
+                danger: true,
+                confirmText: t('discardConfirm'),
+                onClose: () => setDiscardOpen(false),
+                onConfirm: () => {
+                  setTabDirty(tab.id, false);
+                  switchToPreview();
+                  return true;
+                },
+              })
+            : null,
+        );
+      }
+
+      function EditorTitle({ useTabInfo }) {
+        const { tab } = useTabInfo();
+        const dirty = useTabDirty(tab.id);
+        const rel =
+          typeof tab.navigation?.params?.rel === 'string' && tab.navigation.params.rel !== ''
+            ? tab.navigation.params.rel
+            : parseEditorAddress(tab.contentId)?.rel ?? '';
+        const name = rel === '' ? t('editorTab') : baseOf(rel);
+        return h(
+          'span',
+          { className: 'dsh-fk-tabtitle', title: rel === '' ? name : rel },
+          h(Icon, { name: 'file', size: 15 }),
+          h('span', { className: 'dsh-fk-tabtitle-name' }, name),
+          dirty ? h('span', { className: 'dsh-fk-tabdot', title: t('dirty') }) : null,
+        );
+      }
+
       function createOwnedStyle(css) {
         const el = document.createElement('style');
         el.setAttribute('data-plugin', OWNER);
@@ -775,15 +1064,69 @@
       }
 
       // ------------------------------------------------------------------
-      // Dirty tabs (the FileKit page's close guard)
+      // Dirty tabs (close guard + the tab title's unsaved dot)
       // ------------------------------------------------------------------
 
       const dirtyTabs = new Set();
+      const dirtyListeners = new Set();
 
       function setTabDirty(tabId, dirty) {
         if (typeof tabId !== 'string' || tabId === '') return;
+        const before = dirtyTabs.has(tabId);
         if (dirty) dirtyTabs.add(tabId);
         else dirtyTabs.delete(tabId);
+        if (before === dirtyTabs.has(tabId)) return;
+        for (const listener of dirtyListeners) {
+          try {
+            listener();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      /** Live dirty flag for one tab, used by its title chip. */
+      function useTabDirty(tabId) {
+        const [dirty, setDirty] = React.useState(() => dirtyTabs.has(tabId));
+        React.useEffect(() => {
+          const listener = () => setDirty(dirtyTabs.has(tabId));
+          dirtyListeners.add(listener);
+          listener();
+          return () => dirtyListeners.delete(listener);
+        }, [tabId]);
+        return dirty;
+      }
+
+      // ------------------------------------------------------------------
+      // Per-file editor tabs
+      // ------------------------------------------------------------------
+
+      /** Find the open tab whose content is one resource address (a preview tab). */
+      function tabIdForContent(sessionId, contentId) {
+        const open = sidebarRightService?.tabsIn?.(sessionId) ?? [];
+        return open.find((item) => item.contentId === contentId)?.id;
+      }
+
+      /**
+       * Open one file's editor tab. The address carries session+file, so the
+       * same file reuses its tab and a restored layout can still resolve it.
+       * An optional `replaceTabId` swaps an existing tab — the preview page's
+       * edit button passes its own tab.
+       */
+      function openEditorTab(sessionId, rel, replaceTabId) {
+        if (typeof rel !== 'string' || rel === '') return;
+        if (sidebarRightService === undefined || typeof sidebarRightService.openResource !== 'function') {
+          showToast(t('error.internal'), 'error');
+          return;
+        }
+        try {
+          sidebarRightService.openResource(editorAddress(sessionId, rel), {
+            params: { rel },
+            ...(typeof replaceTabId === 'string' ? { replaceTab: replaceTabId } : {}),
+          });
+        } catch (failure) {
+          showToast(errorText(failure), 'error');
+        }
       }
 
       // ------------------------------------------------------------------
@@ -931,6 +1274,14 @@
               common,
               h('rect', { x: 3, y: 4.5, width: 18, height: 15, rx: 2.2 }),
               h('path', { d: 'M14.5 4.5v15' }),
+            );
+          case 'filesPanel':
+            return h(
+              'svg',
+              common,
+              h('rect', { x: 3, y: 4.5, width: 18, height: 15, rx: 2.2 }),
+              h('path', { d: 'M14.5 4.5v15' }),
+              h('path', { d: 'M6 9h5M6 12h5M6 15h5' }),
             );
           case 'spark':
             return h('svg', common, h('path', { d: 'M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z' }));
@@ -1369,30 +1720,12 @@
         }, [notice]);
 
         const loadEditor = React.useCallback(
-          async (rel) => {
-            if (root === '') return;
-            try {
-              const data = await api('read', { root, path: rel, sessionId });
-              if (data.binary === true) {
-                setNotice({ kind: 'error', text: t('binary') });
-                return;
-              }
-              setEditor({
-                rel,
-                original: data.text,
-                mtimeMs: data.mtimeMs,
-                size: data.size,
-                truncated: data.truncated === true,
-              });
-              setDraft(data.text);
-              setMenu(null);
-              setDialog(null);
-              setNotice(null);
-            } catch (failure) {
-              setNotice({ kind: 'error', text: errorText(failure) });
-            }
+          (rel) => {
+            setMenu(null);
+            setDialog(null);
+            openEditorTab(sessionId, rel);
           },
-          [root, sessionId],
+          [sessionId],
         );
 
         const refresh = React.useCallback(() => setReload((value) => value + 1), []);
@@ -1906,7 +2239,6 @@
                 key: entry.path,
                 className: 'dsh-fk-row',
                 'data-kind': entry.kind,
-                'data-selected': selected === entry.path,
                 'data-menu': menu !== null && menu.rel === entry.path,
                 'data-drop': dropDir === entry.path,
                 tabIndex: 0,
@@ -1941,7 +2273,6 @@
                       }
                     : undefined,
                 onClick: () => {
-                  setSelected(entry.path);
                   if (entry.kind === 'directory') {
                     setCwd(entry.path);
                     setMenu(null);
@@ -2127,7 +2458,7 @@
             ),
             h('span', { className: 'dsh-fk-spacer' }),
             h(IconButton, {
-              icon: 'panel',
+              icon: 'filesPanel',
               label: t('openFiles'),
               onClick: () => {
                 try {
@@ -2464,7 +2795,7 @@
             const isDir = menu.kind === 'directory';
             if (isDir) menuItems.push({ label: t('openDirInFileKit'), icon: 'brand', onSelect: () => openFileKit({ dir: menu.rel }) });
             else menuItems.push({ label: t('openPreview'), icon: 'file', onSelect: () => openPreview(menu.rel) });
-            if (!isDir) menuItems.push({ label: t('openEditor'), icon: 'edit', onSelect: () => openFileKit({ rel: menu.rel, action: 'edit' }) });
+            if (!isDir) menuItems.push({ label: t('openEditor'), icon: 'edit', onSelect: () => openEditorTab(sessionId, menu.rel) });
             menuItems.push({ separator: true });
             if (isDir) {
               menuItems.push({ label: t('newFileHere'), icon: 'filePlus', onSelect: () => setDialog({ kind: 'create-file', dir: menu.rel }) });
@@ -2571,7 +2902,6 @@
                     key: entry.path,
                     className: 'dsh-fk-trow',
                     'data-kind': entry.kind,
-                    'data-selected': selected === entry.path,
                     'data-menu': menu !== null && menu.rel === entry.path,
                     'data-drop': dropDir === entry.path,
                     role: 'treeitem',
@@ -2582,7 +2912,6 @@
                     draggable: true,
                     title: entry.path,
                     onClick: () => {
-                      setSelected(entry.path);
                       if (isDir) toggleDir(entry.path);
                       else openPreview(entry.path);
                     },
@@ -2856,6 +3185,14 @@
         const [menu, setMenu] = React.useState(null);
         if (abs === '') return null;
 
+        /** Swap this preview tab for the file's editor tab. */
+        const startEditing = async (target, session) => {
+          const workspace = await api('workspace', { sessionId: session, file: target });
+          const rel = relFromAbs(target, workspace.root);
+          if (rel === null) throw Object.assign(new Error('outside'), { code: 'outside-workspace' });
+          openEditorTab(session, rel, tabIdForContent(session, fileAddress(session, rel)));
+        };
+
         const run = async (label, fn) => {
           try {
             await fn();
@@ -2870,7 +3207,7 @@
         };
 
         const items = [
-          { label: t('openEditor'), icon: 'edit', onSelect: () => run(t('openEditor'), () => openFileInKit(abs, sessionId, inputActions, 'edit')) },
+          { label: t('openEditor'), icon: 'edit', onSelect: () => run(t('openEditor'), () => startEditing(abs, sessionId)) },
           { label: t('rename'), icon: 'edit', onSelect: () => run(t('rename'), () => openFileInKit(abs, sessionId, inputActions, 'rename')) },
           { label: t('move'), icon: 'folder', onSelect: () => run(t('move'), () => openFileInKit(abs, sessionId, inputActions, 'move')) },
           { label: t('copyAbs'), icon: 'copy', onSelect: () => run(t('copyAbs'), async () => {
@@ -2897,9 +3234,9 @@
             {
               type: 'button',
               className: 'dsh-fk-tool',
-              title: t('edit'),
-              'aria-label': t('edit'),
-              onClick: () => run(t('edit'), () => openFileInKit(abs, sessionId, inputActions, 'edit')),
+              title: t('openEditor'),
+              'aria-label': t('openEditor'),
+              onClick: () => run(t('openEditor'), () => startEditing(abs, sessionId)),
             },
             h(Icon, { name: 'edit', size: 15 }),
           ),
@@ -3110,7 +3447,7 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-body{flex:1;min-height:0;overflow:auto;padding:4px 6px 10px}
 .dsh-fk-row{display:flex;align-items:center;gap:8px;min-height:32px;padding:3px 6px;border-radius:7px;cursor:pointer;outline:none}
 .dsh-fk-row:hover{background:var(--dsh-fk-hover)}
-.dsh-fk-row[data-menu=true],.dsh-fk-row[data-selected=true]{background:var(--dsh-fk-active);box-shadow:inset 2px 0 0 var(--dsh-fk-orange)}
+.dsh-fk-row[data-menu=true]{background:var(--dsh-fk-hover)}
 .dsh-fk-row:focus-visible{outline:1.5px solid var(--dsh-fk-orange);outline-offset:-2px}
 .dsh-fk-row[data-drop=true]{outline:1.5px dashed var(--dsh-fk-orange);outline-offset:-2px;background:var(--dsh-fk-soft)}
 .dsh-fk-row-static{cursor:default}
@@ -3124,6 +3461,12 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-row:hover .dsh-fk-rowactions,.dsh-fk-row:focus-within .dsh-fk-rowactions{opacity:1}
 @media (hover:none){.dsh-fk-rowactions{opacity:1}}
 .dsh-fk-editor{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:10px 12px 12px}
+.dsh-fk-editorhead{display:flex;align-items:center;gap:8px;padding:6px 8px 6px 12px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none}
+.dsh-fk-editorpath{display:flex;align-items:center;gap:6px;min-width:0;color:var(--dsw-alias-label-primary);font-size:12.5px}
+.dsh-fk-editorpath svg{color:var(--dsh-fk-dir)}
+.dsh-fk-editorpathname{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-fk-editorpathdir{color:var(--dsw-alias-label-tertiary);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-fk-iconactions{display:flex;align-items:center;gap:2px;flex:none}
 .dsh-fk-codeeditor{position:relative;flex:1;min-height:160px;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base)}
 .dsh-fk-codeeditor:focus-within{border-color:var(--dsh-fk-orange)}
 .dsh-fk-codeeditor-pre{position:absolute;inset:0;margin:0;padding:10px 12px;overflow:hidden;pointer-events:none;font:var(--dsh-fk-editor-font)/1.62 var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);white-space:pre;tab-size:2;color:var(--dsw-alias-label-primary)}
@@ -3166,6 +3509,8 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-toast[data-kind=error]{color:var(--dsw-alias-state-error-primary)}
 .dsh-fk-tabtitle{display:inline-flex;align-items:center;gap:5px;min-width:0}
 .dsh-fk-tabtitle svg{color:var(--dsh-fk-dir)}
+.dsh-fk-tabtitle-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-fk-tabdot{width:7px;height:7px;border-radius:50%;background:var(--dsh-fk-orange);flex:none;margin-left:2px;box-shadow:0 0 0 2px rgb(244 81 30/.18)}
 .dsh-fk-filestab{background:transparent}
 .dsh-fk-treehead{display:flex;align-items:center;gap:6px;padding:7px 8px 7px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none}
 .dsh-fk-rootpath{display:flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:4px 7px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
@@ -3176,7 +3521,7 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-tlevel{display:flex;flex-direction:column;gap:0}
 .dsh-fk-trow{display:flex;align-items:center;gap:5px;min-height:26px;padding:2px 6px 2px 5px;border-radius:6px;cursor:pointer;outline:none;user-select:none}
 .dsh-fk-trow:hover{background:var(--dsh-fk-hover)}
-.dsh-fk-trow[data-menu=true],.dsh-fk-trow[data-selected=true]{background:var(--dsh-fk-active);box-shadow:inset 2px 0 0 var(--dsh-fk-orange)}
+.dsh-fk-trow[data-menu=true]{background:var(--dsh-fk-hover)}
 .dsh-fk-trow:focus-visible{outline:1.5px solid var(--dsh-fk-orange);outline-offset:-2px}
 .dsh-fk-trow[data-drop=true]{outline:1.5px dashed var(--dsh-fk-orange);outline-offset:-2px;background:var(--dsh-fk-soft)}
 .dsh-fk-trow[data-kind=directory] .dsh-fk-trowname{font-weight:500}
@@ -3304,24 +3649,49 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
               }),
             'dsh-filekit: filekit type',
           );
+          ctx.effect(
+            () =>
+              tabs.register({
+                id: EDITOR_ID,
+                kind: EDITOR_KIND,
+                priority: 'extension',
+                keepMounted: true,
+                patterns: ['dsh-resource://filekit-edit/[\\s\\S]+'],
+                title: () => t('editorTab'),
+              }),
+            'dsh-filekit: editor type',
+          );
         } else {
           console.warn('[dsh-filekit] sidebarRightTabs service missing; tabs not registered');
         }
 
         if (sidebarRightService !== undefined && typeof sidebarRightService.registerCloseHandler === 'function') {
           ctx.effect(() => {
-            try {
-              return sidebarRightService.registerCloseHandler(FILEKIT_KIND, (sessionId, tab) => {
-                if (dirtyTabs.has(tab.id)) {
-                  showToast(t('saveBeforeClose'), 'error');
-                  throw new Error('dsh-filekit: unsaved changes');
-                }
-              });
-            } catch (error) {
-              console.warn('[dsh-filekit] close guard not registered:', error?.message ?? error);
-              return undefined;
+            const releases = [];
+            for (const kind of [FILEKIT_KIND, EDITOR_KIND]) {
+              try {
+                releases.push(
+                  sidebarRightService.registerCloseHandler(kind, (sessionId, tab) => {
+                    if (dirtyTabs.has(tab.id)) {
+                      showToast(t('saveBeforeClose'), 'error');
+                      throw new Error('dsh-filekit: unsaved changes');
+                    }
+                  }),
+                );
+              } catch (error) {
+                console.warn(`[dsh-filekit] close guard for ${kind} not registered:`, error?.message ?? error);
+              }
             }
-          }, 'dsh-filekit: close guard');
+            return () => {
+              for (const release of releases) {
+                try {
+                  release?.();
+                } catch {
+                  /* ignore */
+                }
+              }
+            };
+          }, 'dsh-filekit: close guards');
         }
 
         const registerList = (slot, options, Component) => {
@@ -3356,8 +3726,10 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
           FilesBody,
         );
         registerKeyed('sidebar.right.pane.tab', { key: FILEKIT_ID, locale: NS }, FileKitTab);
+        registerKeyed('sidebar.right.pane.tab', { key: EDITOR_ID, locale: NS }, FileEditorTab);
         registerKeyed('sidebar.right.pane.tab.title', { key: FILES_ID }, FilesTitle);
         registerKeyed('sidebar.right.pane.tab.title', { key: FILEKIT_ID }, FileKitTitle);
+        registerKeyed('sidebar.right.pane.tab.title', { key: EDITOR_ID }, EditorTitle);
 
         // The workspace-files guide card gains a FileKit button underneath.
         registerKeyed('sidebar.right.tab.guide.entry', { key: FILES_ID, locale: NS }, FilesGuideCard);
