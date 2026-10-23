@@ -3663,101 +3663,31 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
           return;
         }
 
-        sidebarRightService = ctx.get('sidebarRight');
-
-        ctx.effect(() => {
-          const locale = ctx.get('locale');
-          if (locale === undefined) return undefined;
-          let dispose;
-          try {
-            dispose = locale.register(NS, { zh: DICT.zh, en: DICT.en });
-            translate = locale.bind(NS);
-          } catch (error) {
-            console.warn('[dsh-filekit] locale registration failed:', error?.message ?? error);
-            return undefined;
-          }
-          return () => {
-            translate = fallbackText;
-            try {
-              dispose?.();
-            } catch {
-              /* removing a dictionary must not break unload */
-            }
-          };
-        }, 'dsh-filekit: dictionaries');
-
-        ctx.effect(() => {
-          const style = createOwnedStyle(CSS);
-          return () => style.remove();
-        }, 'dsh-filekit: styles');
-
-        // The Settings panel is a body portal that mounts and unmounts, so the
-        // nav mark follows the DOM instead of any one render pass.
-        ctx.effect(() => {
-          markSettingsNav();
-          const observer = new MutationObserver(() => markSettingsNav());
-          observer.observe(document.body, { childList: true, subtree: true });
-          return () => observer.disconnect();
-        }, 'dsh-filekit: settings nav icon');
-
-        // Tab types: take over the workspace files page as an extension, and
-        // add the FileKit page as a page type of its own.
-        const tabs = ctx.get('sidebarRightTabs');
-        if (tabs !== undefined && typeof tabs.register === 'function') {
-          ctx.effect(
-            () =>
-              tabs.register({
-                id: FILES_ID,
-                kind: FILES_KIND,
-                priority: 'extension',
-                keepMounted: true,
-                title: () => t('filesTitle'),
-                guide: [
-                  {
-                    id: 'workspace',
-                    order: 10,
-                    title: () => t('filesGuideTitle'),
-                    description: () => t('filesGuideDescription'),
-                    icon: FilesGuideArtwork,
-                  },
-                ],
-              }),
-            'dsh-filekit: files type',
+        // Services owned by other Client plugins settle at their own pace: the
+        // sidebar-right package waits for slots, layout, locale, resources,
+        // sessions, uiSession and shortcuts, so on a cold page boot it activates
+        // *after* this plugin, whose only declared dependency is `slots`. Reading
+        // those services once with `ctx.get` therefore left the FileKit page types
+        // and the close guards unregistered until the plugin was toggled off and
+        // on again. `ctx.inject` waits for each service and runs its body whenever
+        // the service (re)appears, which is also what keeps an HMR reload working.
+        ctx.inject(['sidebarRight'], (scope) => {
+          const service = scope.get('sidebarRight');
+          sidebarRightService = service;
+          scope.effect(
+            () => () => {
+              if (sidebarRightService === service) sidebarRightService = undefined;
+            },
+            'dsh-filekit: sidebar service handle',
           );
-          ctx.effect(
-            () =>
-              tabs.register({
-                id: FILEKIT_ID,
-                kind: FILEKIT_KIND,
-                priority: 'extension',
-                keepMounted: true,
-                title: () => t('title'),
-              }),
-            'dsh-filekit: filekit type',
-          );
-          ctx.effect(
-            () =>
-              tabs.register({
-                id: EDITOR_ID,
-                kind: EDITOR_KIND,
-                priority: 'extension',
-                keepMounted: true,
-                patterns: ['dsh-resource://filekit-edit/[\\s\\S]+'],
-                title: () => t('editorTab'),
-              }),
-            'dsh-filekit: editor type',
-          );
-        } else {
-          console.warn('[dsh-filekit] sidebarRightTabs service missing; tabs not registered');
-        }
+          if (service === undefined || typeof service.registerCloseHandler !== 'function') return;
 
-        if (sidebarRightService !== undefined && typeof sidebarRightService.registerCloseHandler === 'function') {
-          ctx.effect(() => {
+          scope.effect(() => {
             const releases = [];
             for (const kind of [FILEKIT_KIND, EDITOR_KIND]) {
               try {
                 releases.push(
-                  sidebarRightService.registerCloseHandler(kind, (sessionId, tab) => {
+                  service.registerCloseHandler(kind, (sessionId, tab) => {
                     if (dirtyTabs.has(tab.id)) {
                       showToast(t('saveBeforeClose'), 'error');
                       throw new Error('dsh-filekit: unsaved changes');
@@ -3778,7 +3708,98 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
               }
             };
           }, 'dsh-filekit: close guards');
-        }
+        });
+
+        ctx.inject(['locale'], (scope) => {
+          scope.effect(() => {
+            const locale = scope.get('locale');
+            if (locale === undefined) return undefined;
+            let dispose;
+            try {
+              dispose = locale.register(NS, { zh: DICT.zh, en: DICT.en });
+              translate = locale.bind(NS);
+            } catch (error) {
+              console.warn('[dsh-filekit] locale registration failed:', error?.message ?? error);
+              return undefined;
+            }
+            return () => {
+              translate = fallbackText;
+              try {
+                dispose?.();
+              } catch {
+                /* removing a dictionary must not break unload */
+              }
+            };
+          }, 'dsh-filekit: dictionaries');
+        });
+
+        ctx.effect(() => {
+          const style = createOwnedStyle(CSS);
+          return () => style.remove();
+        }, 'dsh-filekit: styles');
+
+        // The Settings panel is a body portal that mounts and unmounts, so the
+        // nav mark follows the DOM instead of any one render pass.
+        ctx.effect(() => {
+          markSettingsNav();
+          const observer = new MutationObserver(() => markSettingsNav());
+          observer.observe(document.body, { childList: true, subtree: true });
+          return () => observer.disconnect();
+        }, 'dsh-filekit: settings nav icon');
+
+        // Tab types: take over the workspace files page as an extension, and
+        // add the FileKit page as a page type of its own. The registry is the
+        // sidebar-right package's service, so wait for it instead of sampling it.
+        ctx.inject(['sidebarRightTabs'], (scope) => {
+          const tabs = scope.get('sidebarRightTabs');
+          if (tabs === undefined || typeof tabs.register !== 'function') {
+            console.warn('[dsh-filekit] sidebarRightTabs service missing; tabs not registered');
+            return;
+          }
+          scope.effect(
+            () =>
+              tabs.register({
+                id: FILES_ID,
+                kind: FILES_KIND,
+                priority: 'extension',
+                keepMounted: true,
+                title: () => t('filesTitle'),
+                guide: [
+                  {
+                    id: 'workspace',
+                    order: 10,
+                    title: () => t('filesGuideTitle'),
+                    description: () => t('filesGuideDescription'),
+                    icon: FilesGuideArtwork,
+                  },
+                ],
+              }),
+            'dsh-filekit: files type',
+          );
+          scope.effect(
+            () =>
+              tabs.register({
+                id: FILEKIT_ID,
+                kind: FILEKIT_KIND,
+                priority: 'extension',
+                keepMounted: true,
+                title: () => t('title'),
+              }),
+            'dsh-filekit: filekit type',
+          );
+          scope.effect(
+            () =>
+              tabs.register({
+                id: EDITOR_ID,
+                kind: EDITOR_KIND,
+                priority: 'extension',
+                keepMounted: true,
+                patterns: ['dsh-resource://filekit-edit/[\\s\\S]+'],
+                title: () => t('editorTab'),
+              }),
+            'dsh-filekit: editor type',
+          );
+        });
 
         const registerList = (slot, options, Component) => {
           try {

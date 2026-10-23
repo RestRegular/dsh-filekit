@@ -144,6 +144,12 @@ node scripts/repair-session-log.mjs                    # 扫描 ~/.dsh/sessions 
 
 通知依赖插件 Host 半边加载。修改 `index.js` 后需要重启 DSH（或重新加载插件），客户端 `client.js` 的热更新不会加载 Host 代码。
 
+### 重启后插件「启用但不生效」，要关掉再打开才恢复
+
+0.2.4 及更早版本在浏览器端只声明了 `slots` 一个依赖，然后在 `apply()` 里用 `ctx.get('sidebarRightTabs')` / `ctx.get('sidebarRight')` 一次性取右侧栏服务。`sidebarRightTabs` 由 `@deepseek-ai/dsh-client-ui-sidebar-right` 在它自己的 `apply()` 里 `provide`，而那个插件要等 `slots`、`layout`、`locale`、`resources`、`sessions`、`uiSession`、`shortcuts` 全部就绪——冷启动页面时它总是晚于本插件激活。于是标签页类型（`files` 接管页、`filekit` 页、每个文件的编辑器页）压根没注册，插件看起来「启用着但没反应」；在插件管理器里关掉再打开会重新跑一遍 `apply()`，那时服务已就绪，所以立刻恢复。
+
+0.2.5 起改为 `ctx.inject(['sidebarRightTabs'], …)` / `ctx.inject(['sidebarRight'], …)` / `ctx.inject(['locale'], …)`，服务一出现就注册，冷启动与热重载走同一条路径。
+
 ## 开发
 
 ```bash
