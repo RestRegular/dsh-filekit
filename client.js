@@ -3271,6 +3271,28 @@
       // Settings page
       // ------------------------------------------------------------------
 
+      // Settings controls follow the shipped Settings surfaces: the shared
+      // Switch primitive when present (same geometry, brand fill and focus
+      // ring as every other preference), otherwise the same design rebuilt
+      // from `--dsw-*` tokens. No plugin palette here.
+      function SettingsSwitch({ checked, label, onChange }) {
+        if (typeof primitives?.Switch === 'function') {
+          return h(primitives.Switch, { checked, label, onChange });
+        }
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: 'dsh-fk-switch',
+            role: 'switch',
+            'aria-checked': checked,
+            'aria-label': label,
+            onClick: () => onChange(!checked),
+          },
+          h('span', { className: 'dsh-fk-switchknob' }),
+        );
+      }
+
       function ToggleRow({ title, hint, checked, onChange }) {
         return h(
           'div',
@@ -3281,18 +3303,7 @@
             h('span', { className: 'dsh-fk-settitle' }, title),
             hint !== undefined ? h('span', { className: 'dsh-fk-sethint' }, hint) : null,
           ),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsh-fk-switch',
-              role: 'switch',
-              'aria-checked': checked,
-              'data-on': checked,
-              onClick: () => onChange(!checked),
-            },
-            h('span', { className: 'dsh-fk-switchknob' }),
-          ),
+          h(SettingsSwitch, { checked, label: title, onChange }),
         );
       }
 
@@ -3314,7 +3325,7 @@
           h(
             'div',
             { className: 'dsh-fk-sethead' },
-            h('span', { className: 'dsh-fk-setbrand' }, h(Icon, { name: 'brand', size: 22 })),
+            h('span', { className: 'dsh-fk-setbrand' }, h(Icon, { name: 'brand', size: 20 })),
             h(
               'span',
               { className: 'dsh-fk-setheadtext' },
@@ -3408,7 +3419,71 @@
       }
 
       // ------------------------------------------------------------------
-      // Styles — gold → orange-red brand accents
+      // Settings navigation icon
+      // ------------------------------------------------------------------
+
+      // The shell hard-codes the settings navigation glyph by section id
+      // (`navIcon(id)` in ui-settings-general) and `settings.section` has no
+      // icon registration field, so a section with an unknown id only ever
+      // gets the generic gear. Keep the host's own <svg> box — geometry, row
+      // height and focus stay the host's — and swap its children for the
+      // plugin's folder+spark line mark, drawn on the host's 16-unit grid
+      // with the same 1.3 stroke. Selectors match the CSS-module suffix, so a
+      // hash change only means the mark stops applying, never a broken icon.
+      const NAV_ICON_NS = 'http://www.w3.org/2000/svg';
+      const NAV_VIEW_BOX = '0 0 16 16';
+      const NAV_ICON_DOM = [
+        {
+          tag: 'path',
+          attrs: {
+            d: 'M2 4.53A1.53 1.53 0 0 1 3.53 3h2l1.34 1.33h5.6A1.53 1.53 0 0 1 14 5.87v5.6A1.53 1.53 0 0 1 12.47 13H3.53A1.53 1.53 0 0 1 2 11.47z',
+            fill: 'none',
+            stroke: 'currentColor',
+            'stroke-width': '1.3',
+            'stroke-linejoin': 'round',
+          },
+        },
+        {
+          tag: 'path',
+          attrs: {
+            d: 'M10.13 6.4l.5 1.37 1.37.5-1.37.5-.5 1.37-.5-1.37-1.37-.5 1.37-.5z',
+            fill: 'none',
+            stroke: 'currentColor',
+            'stroke-width': '1.3',
+            'stroke-linejoin': 'round',
+            'data-dsh-filekit-logo': '1',
+          },
+        },
+      ];
+
+      function navSvgNode(spec) {
+        const node = document.createElementNS(NAV_ICON_NS, spec.tag);
+        for (const [name, value] of Object.entries(spec.attrs ?? {})) node.setAttribute(name, value);
+        return node;
+      }
+
+      function paintSettingsNavIcon(svg) {
+        if (svg.querySelector('[data-dsh-filekit-logo]') !== null) return;
+        svg.setAttribute('viewBox', NAV_VIEW_BOX);
+        svg.replaceChildren(...NAV_ICON_DOM.map(navSvgNode));
+      }
+
+      /** Give the "FileKit" settings navigation row the plugin line mark. */
+      function markSettingsNav() {
+        const wanted = t('settingsTitle').trim();
+        if (wanted === '') return;
+        for (const cell of document.querySelectorAll('[class*="_navCell"]')) {
+          if ((cell.textContent ?? '').trim() !== wanted) continue;
+          cell.classList.add('dsh-filekit-nav');
+          const icon = cell.querySelector('[class*="_navIcon"]');
+          if (icon !== null) paintSettingsNavIcon(icon);
+        }
+      }
+
+
+      // ------------------------------------------------------------------
+      // Styles — gold → orange-red brand accents for the file surfaces;
+      // the Settings page stays on the shared `--dsw-*` token palette.
       // ------------------------------------------------------------------
 
       const CSS = `
@@ -3550,29 +3625,31 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-guidedesc{font-size:10.5px;line-height:1.35;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-fk-guidesep{height:1px;margin:0 14px;background:var(--dsw-alias-border-l3)}
 .dsh-fk-guidecard>svg,.dsh-fk-guideextra>svg{color:var(--dsw-alias-label-tertiary);flex:none}
-.dsh-fk-settings{display:flex;flex-direction:column;gap:16px;max-width:680px;padding:4px 0 24px}
-.dsh-fk-sethead{display:flex;align-items:center;gap:12px;padding-bottom:10px;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dsh-fk-setbrand{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:10px;background:var(--dsh-fk-grad);color:#fff;flex:none;box-shadow:0 2px 10px rgb(244 81 30/.28)}
-.dsh-fk-setheadtext{display:flex;flex-direction:column;gap:2px}
-.dsh-fk-settitle-main{font-size:15px;font-weight:650}
-.dsh-fk-setrow{display:flex;align-items:center;gap:18px;justify-content:space-between;padding:10px 2px;border-bottom:1px solid var(--dsw-alias-border-l1)}
-.dsh-fk-settext{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
-.dsh-fk-settitle{font-size:13px;font-weight:550}
-.dsh-fk-sethint{font-size:11px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
-.dsh-fk-switch{position:relative;width:38px;height:22px;padding:0;border:0;border-radius:11px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;flex:none;transition:background .15s}
-.dsh-fk-switch[data-on=true]{background:var(--dsh-fk-grad)}
-.dsh-fk-switchknob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgb(0 0 0/.25);transition:left .15s}
-.dsh-fk-switch[data-on=true] .dsh-fk-switchknob{left:19px}
-.dsh-fk-segmented{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;flex:none}
-.dsh-fk-segment{padding:4px 9px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
-.dsh-fk-segment:hover{background:var(--dsh-fk-hover)}
-.dsh-fk-segment[data-on=true]{background:var(--dsh-fk-grad);color:#fff}
+.dsh-fk-settings{display:flex;flex-direction:column;max-width:680px;padding:4px 0 24px}
+.dsh-fk-sethead{display:flex;align-items:flex-start;gap:10px;padding:2px 0 12px}
+.dsh-fk-setbrand{display:flex;align-items:center;justify-content:center;width:20px;height:22px;flex:none;color:var(--dsw-alias-label-secondary)}
+.dsh-fk-setheadtext{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dsh-fk-settitle-main{font-size:14px;font-weight:500;line-height:22px;color:var(--dsw-alias-label-primary)}
+.dsh-fk-setrow{display:flex;align-items:center;gap:24px;justify-content:space-between;padding:16px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.dsh-fk-settext{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}
+.dsh-fk-settitle{font-size:14px;font-weight:400;line-height:22px;color:var(--dsw-alias-label-primary)}
+.dsh-fk-sethint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dsh-fk-switch{box-sizing:border-box;position:relative;flex:none;width:36px;height:20px;padding:2px;border:0;border-radius:999px;background:var(--dsw-alias-border-l3);cursor:pointer;transition:background .15s}
+.dsh-fk-switch[aria-checked=true]{background:var(--dsw-alias-brand-primary)}
+.dsh-fk-switch:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+.dsh-fk-switchknob{display:block;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-switch-thumb);transition:transform .12s ease}
+.dsh-fk-switch[aria-checked=true] .dsh-fk-switchknob{transform:translateX(16px);background:var(--dsw-alias-label-primary-foreground)}
+.dsh-fk-segmented{display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:2px;padding:4px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-interactive-bg-hover);flex:none}
+.dsh-fk-segment{height:28px;padding:0 14px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;font-weight:500;line-height:20px;cursor:pointer;white-space:nowrap;transition:color .12s ease}
+.dsh-fk-segment:hover{color:var(--dsw-alias-label-primary)}
+.dsh-fk-segment:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}
+.dsh-fk-segment[data-on=true]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-soft)}
 .dsh-fk-fontpicker{display:flex;align-items:center;gap:10px;flex:none}
-.dsh-fk-range{width:130px;accent-color:var(--dsh-fk-orange)}
-.dsh-fk-fontvalue{font-size:12px;color:var(--dsw-alias-label-secondary);min-width:34px;text-align:right}
-.dsh-fk-setfoot{display:flex;align-items:center;gap:10px}
+.dsh-fk-range{width:150px;accent-color:var(--dsw-alias-brand-primary)}
+.dsh-fk-fontvalue{font-size:13px;color:var(--dsw-alias-label-secondary);min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
+.dsh-fk-setfoot{display:flex;align-items:center;gap:10px;padding-top:16px}
 .dsh-fk-setflash{font-size:12px;color:var(--dsw-alias-state-success-primary)}
-@media (max-width:420px){.dsh-fk-setrow{flex-direction:column;align-items:flex-start;gap:8px}.dsh-fk-fontpicker{width:100%}.dsh-fk-range{flex:1}}
+@media (max-width:420px){.dsh-fk-setrow{flex-direction:column;align-items:flex-start;gap:10px}.dsh-fk-fontpicker{width:100%}.dsh-fk-range{flex:1}}
 `;
 
       // ------------------------------------------------------------------
@@ -3613,6 +3690,15 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
           const style = createOwnedStyle(CSS);
           return () => style.remove();
         }, 'dsh-filekit: styles');
+
+        // The Settings panel is a body portal that mounts and unmounts, so the
+        // nav mark follows the DOM instead of any one render pass.
+        ctx.effect(() => {
+          markSettingsNav();
+          const observer = new MutationObserver(() => markSettingsNav());
+          observer.observe(document.body, { childList: true, subtree: true });
+          return () => observer.disconnect();
+        }, 'dsh-filekit: settings nav icon');
 
         // Tab types: take over the workspace files page as an extension, and
         // add the FileKit page as a page type of its own.
