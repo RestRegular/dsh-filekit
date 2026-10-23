@@ -38,7 +38,7 @@ import {
 const ROUTE = '/dsh-filekit';
 
 /** Plugin version mirrored in package.json. */
-const VERSION = '0.2.5';
+const VERSION = '0.2.6';
 
 /** Request body cap: larger than the editor's text cap, small enough to stay sane. */
 const BODY_LIMIT = 16 * 1024 * 1024;

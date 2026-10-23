@@ -1581,13 +1581,27 @@
           h(
             'div',
             { className: 'dsh-fk-crumbs dsh-fk-dialog-crumbs' },
-            h('button', { type: 'button', className: 'dsh-fk-crumb', title: root, onClick: () => setCwd('') }, h(Icon, { name: 'home', size: 13 }), workspaceName(root)),
+            h(
+              'button',
+              { type: 'button', className: 'dsh-fk-crumb', title: root, onClick: () => setCwd('') },
+              h(Icon, { name: 'home', size: 13 }),
+              h('span', { className: 'dsh-fk-crumb-label' }, workspaceName(root)),
+            ),
             parts.map((segment, index) =>
               h(
                 React.Fragment,
                 { key: `${index}-${segment}` },
                 h(Icon, { name: 'chevronLeft', size: 11 }),
-                h('button', { type: 'button', className: 'dsh-fk-crumb', onClick: () => setCwd(parts.slice(0, index + 1).join('/')) }, segment),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dsh-fk-crumb',
+                    title: segment,
+                    onClick: () => setCwd(parts.slice(0, index + 1).join('/')),
+                  },
+                  h('span', { className: 'dsh-fk-crumb-label' }, segment),
+                ),
               ),
             ),
           ),
@@ -1699,10 +1713,78 @@
         const saveRef = React.useRef(null);
         const draggingRef = React.useRef(null);
         const appliedRevisionRef = React.useRef(0);
+        const crumbsRef = React.useRef(null);
+        const thumbRef = React.useRef(null);
         editorRef.current = editor;
         draftRef.current = draft;
 
         const dirty = editor !== null && draft !== editor.original;
+
+        // The breadcrumb bar scrolls horizontally instead of clipping a deep path.
+        // Its scrollbar is a thin overlay thumb we own: the native bar would take
+        // layout space and Chromium does not restyle scrollbar pseudo-elements on
+        // hover, so it could neither stay out of the labels' way nor widen under
+        // the pointer. Navigation moves the bar to the tail (the current folder or
+        // file), a plain vertical wheel scrolls it sideways while it overflows, and
+        // dragging the thumb scrolls it too.
+        const crumbsKey = view === 'editor' ? `editor:${editor === null ? '' : editor.rel}` : `${view}:${cwd}`;
+        React.useEffect(() => {
+          const el = crumbsRef.current;
+          if (el === null) return undefined;
+          const thumb = thumbRef.current;
+          const overflow = () => el.scrollWidth - el.clientWidth;
+          const sync = () => {
+            if (thumb === null) return;
+            const max = overflow();
+            if (max <= 1) {
+              thumb.style.opacity = '0';
+              return;
+            }
+            const track = el.clientWidth;
+            const width = Math.max(28, Math.round((track * track) / el.scrollWidth));
+            thumb.style.width = `${width}px`;
+            thumb.style.transform = `translateX(${Math.round((el.scrollLeft / max) * (track - width))}px)`;
+            thumb.style.opacity = '1';
+          };
+          if (overflow() > 1) el.scrollLeft = overflow();
+          sync();
+          const onWheel = (event) => {
+            if (event.deltaY === 0 || overflow() <= 1) return;
+            event.preventDefault();
+            el.scrollLeft += event.deltaY;
+          };
+          el.addEventListener('wheel', onWheel, { passive: false });
+          el.addEventListener('scroll', sync, { passive: true });
+          const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(sync) : undefined;
+          observer?.observe(el);
+          let drag = null;
+          const onPointerDown = (event) => {
+            if (thumb === null) return;
+            const width = thumb.getBoundingClientRect().width;
+            const travel = el.clientWidth - width;
+            drag = { x: event.clientX, left: el.scrollLeft, ratio: travel <= 0 ? 0 : overflow() / travel };
+            thumb.setPointerCapture?.(event.pointerId);
+            event.preventDefault();
+          };
+          const onPointerMove = (event) => {
+            if (drag === null) return;
+            el.scrollLeft = drag.left + (event.clientX - drag.x) * drag.ratio;
+          };
+          const onPointerUp = () => {
+            drag = null;
+          };
+          thumb?.addEventListener('pointerdown', onPointerDown);
+          window.addEventListener('pointermove', onPointerMove);
+          window.addEventListener('pointerup', onPointerUp);
+          return () => {
+            el.removeEventListener('wheel', onWheel);
+            el.removeEventListener('scroll', sync);
+            observer?.disconnect();
+            thumb?.removeEventListener('pointerdown', onPointerDown);
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+          };
+        }, [crumbsKey]);
 
         React.useEffect(() => {
           lastTabActions = tab.actions;
@@ -2104,15 +2186,20 @@
             { className: 'dsh-fk-toolbar' },
             h(
               'div',
-              { className: 'dsh-fk-crumbs' },
+              { className: 'dsh-fk-crumbsbar' },
               h(
-                'button',
-                { type: 'button', className: 'dsh-fk-crumb', onClick: () => setView('browse'), title: t('trash') },
-                h(Icon, { name: 'chevronLeft', size: 13 }),
-                t('rootLabel'),
+                'div',
+                { className: 'dsh-fk-crumbs', ref: crumbsRef },
+                h(
+                  'button',
+                  { type: 'button', className: 'dsh-fk-crumb', onClick: () => setView('browse'), title: t('trash') },
+                  h(Icon, { name: 'chevronLeft', size: 13 }),
+                  h('span', { className: 'dsh-fk-crumb-label' }, t('rootLabel')),
+                ),
+                h('span', { className: 'dsh-fk-crumb-sep' }, '/'),
+                h('span', { className: 'dsh-fk-crumb dsh-fk-crumb-current' }, h('span', { className: 'dsh-fk-crumb-label' }, t('trash'))),
               ),
-              h('span', { className: 'dsh-fk-crumb-sep' }, '/'),
-              h('span', { className: 'dsh-fk-crumb dsh-fk-crumb-current' }, t('trash')),
+              h('div', { className: 'dsh-fk-crumbsthumb', ref: thumbRef, 'aria-hidden': 'true' }),
             ),
             h(
               'div',
@@ -2173,16 +2260,25 @@
                   { className: 'dsh-fk-toolbar' },
                   h(
                     'div',
-                    { className: 'dsh-fk-crumbs' },
+                    { className: 'dsh-fk-crumbsbar' },
                     h(
-                      'button',
-                      { type: 'button', className: 'dsh-fk-crumb', onClick: closeEditor, title: t('back') },
-                      h(Icon, { name: 'chevronLeft', size: 13 }),
-                      t('back'),
+                      'div',
+                      { className: 'dsh-fk-crumbs', ref: crumbsRef },
+                      h(
+                        'button',
+                        { type: 'button', className: 'dsh-fk-crumb', onClick: closeEditor, title: t('back') },
+                        h(Icon, { name: 'chevronLeft', size: 13 }),
+                        h('span', { className: 'dsh-fk-crumb-label' }, t('back')),
+                      ),
+                      h('span', { className: 'dsh-fk-crumb-sep' }, '/'),
+                      h(
+                        'span',
+                        { className: 'dsh-fk-crumb dsh-fk-crumb-current', title: joinAbs(root, editor.rel) },
+                        h('span', { className: 'dsh-fk-crumb-label' }, editor.rel),
+                      ),
+                      dirty ? h('span', { className: 'dsh-fk-badge' }, t('dirty')) : null,
                     ),
-                    h('span', { className: 'dsh-fk-crumb-sep' }, '/'),
-                    h('span', { className: 'dsh-fk-crumb dsh-fk-crumb-current', title: joinAbs(root, editor.rel) }, editor.rel),
-                    dirty ? h('span', { className: 'dsh-fk-badge' }, t('dirty')) : null,
+                    h('div', { className: 'dsh-fk-crumbsthumb', ref: thumbRef, 'aria-hidden': 'true' }),
                   ),
                   h(
                     'div',
@@ -2321,42 +2417,52 @@
             { className: 'dsh-fk-toolbar' },
             h(
               'div',
-              { className: 'dsh-fk-crumbs' },
+              { className: 'dsh-fk-crumbsbar' },
               h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsh-fk-crumb',
-                  title: root,
-                  onClick: () => setCwd(''),
-                  onDragOver: (event) => {
-                    if (!canDropInto(draggingRef.current, '')) return;
-                    event.preventDefault();
-                    setDropDir('');
-                  },
-                  onDrop: (event) => {
-                    event.preventDefault();
-                    const source = draggingRef.current;
-                    endDrag();
-                    if (canDropInto(source, '')) void moveRow(source.rel, source.kind, '');
-                  },
-                  'data-drop': dropDir === '',
-                },
-                h(Icon, { name: 'home', size: 13 }),
-                workspaceName(root),
-              ),
-              parts.map((segment, index) =>
+                'div',
+                { className: 'dsh-fk-crumbs', ref: crumbsRef },
                 h(
-                  React.Fragment,
-                  { key: `${index}-${segment}` },
-                  h(Icon, { name: 'chevronLeft', size: 11 }),
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dsh-fk-crumb',
+                    title: root,
+                    onClick: () => setCwd(''),
+                    onDragOver: (event) => {
+                      if (!canDropInto(draggingRef.current, '')) return;
+                      event.preventDefault();
+                      setDropDir('');
+                    },
+                    onDrop: (event) => {
+                      event.preventDefault();
+                      const source = draggingRef.current;
+                      endDrag();
+                      if (canDropInto(source, '')) void moveRow(source.rel, source.kind, '');
+                    },
+                    'data-drop': dropDir === '',
+                  },
+                  h(Icon, { name: 'home', size: 13 }),
+                  h('span', { className: 'dsh-fk-crumb-label' }, workspaceName(root)),
+                ),
+                parts.map((segment, index) =>
                   h(
-                    'button',
-                    { type: 'button', className: 'dsh-fk-crumb', onClick: () => setCwd(parts.slice(0, index + 1).join('/')) },
-                    segment,
+                    React.Fragment,
+                    { key: `${index}-${segment}` },
+                    h(Icon, { name: 'chevronLeft', size: 11 }),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dsh-fk-crumb',
+                        title: segment,
+                        onClick: () => setCwd(parts.slice(0, index + 1).join('/')),
+                      },
+                      h('span', { className: 'dsh-fk-crumb-label' }, segment),
+                    ),
                   ),
                 ),
               ),
+              h('div', { className: 'dsh-fk-crumbsthumb', ref: thumbRef, 'aria-hidden': 'true' }),
             ),
             h(
               'div',
@@ -3501,12 +3607,20 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-sub{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(360px,52vw)}
 .dsh-fk-spacer{flex:1}
 .dsh-fk-toolbar{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none;flex-wrap:wrap}
-.dsh-fk-crumbs{display:flex;align-items:center;gap:1px;min-width:0;flex:1;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:12px}
-.dsh-fk-crumb{display:inline-flex;align-items:center;gap:4px;max-width:220px;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-fk-crumbsbar{position:relative;display:flex;align-items:center;min-width:0;flex:1}
+.dsh-fk-crumbs{display:flex;flex-wrap:nowrap;align-items:center;gap:1px;min-width:0;flex:1;overflow-x:auto;overflow-y:hidden;color:var(--dsw-alias-label-secondary);font-size:12px;overscroll-behavior-x:contain}
+.dsh-fk-crumbsbar>.dsh-fk-crumbs{scrollbar-width:none;-ms-overflow-style:none}
+.dsh-fk-crumbsbar>.dsh-fk-crumbs::-webkit-scrollbar{display:none;width:0;height:0}
+.dsh-fk-crumbs>svg{flex:none}
+.dsh-fk-crumbsthumb{position:absolute;left:0;bottom:-6px;height:3px;width:0;border-radius:999px;background:var(--dsw-alias-border-l3);opacity:0;pointer-events:auto;transition:height .12s ease,background-color .12s ease}
+.dsh-fk-crumbsbar:hover .dsh-fk-crumbsthumb{height:6px;background:var(--dsw-alias-label-tertiary)}
+.dsh-fk-dialog-crumbs{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l3) transparent}
+.dsh-fk-crumb{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;min-width:56px;max-width:220px;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;white-space:nowrap;overflow:hidden}
+.dsh-fk-crumb-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-fk-crumb:hover{background:var(--dsh-fk-hover);color:var(--dsw-alias-label-primary)}
 .dsh-fk-crumb[data-drop=true]{background:var(--dsh-fk-soft);box-shadow:inset 0 0 0 1px var(--dsh-fk-orange);color:var(--dsh-fk-orange)}
 .dsh-fk-crumb-current{color:var(--dsw-alias-label-primary);font-weight:500;cursor:default}
-.dsh-fk-crumb-sep{opacity:.5}
+.dsh-fk-crumb-sep{opacity:.5;flex:none}
 .dsh-fk-toolbar-actions{display:flex;align-items:center;gap:4px;flex:none}
 .dsh-fk-btn{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .dsh-fk-btn:hover{background:var(--dsh-fk-hover)}
@@ -3550,6 +3664,7 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-codeeditor-input::selection{background:rgb(244 81 30/.24)}
 .dsh-fk-editor-meta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dsw-alias-label-secondary);flex:none}
 .dsh-fk-badge{display:inline-flex;align-items:center;height:18px;padding:0 7px;margin-left:6px;border-radius:9px;background:var(--dsh-fk-grad);color:#fff;font-size:10px;font-weight:600}
+.dsh-fk-crumbs .dsh-fk-badge{flex:none;white-space:nowrap}
 .dsh-fk-warn{display:flex;align-items:center;gap:6px;margin:0;padding:7px 10px;border-radius:7px;background:var(--dsh-fk-soft);color:var(--dsw-alias-state-warn-primary);font-size:12px}
 .dsh-fk-status{padding:7px 14px;border-top:1px solid var(--dsw-alias-border-l2);font-size:12px;flex:none;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-fk-status[data-kind=error]{color:var(--dsw-alias-state-error-primary)}
@@ -3568,7 +3683,7 @@ body[data-ds-dark-theme]{--dsh-fk-dir:#f3bf4d;--dsh-fk-soft:rgb(247 201 72/.14)}
 .dsh-fk-label{font-size:12px;color:var(--dsw-alias-label-secondary)}
 .dsh-fk-input{box-sizing:border-box;width:100%;height:32px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;outline:none}
 .dsh-fk-input:focus{border-color:var(--dsh-fk-orange)}
-.dsh-fk-dialog-crumbs{flex:none;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:6px}
+.dsh-fk-dialog-crumbs{flex:0 0 auto;min-width:0;max-width:100%;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:6px}
 .dsh-fk-picklist{display:flex;flex-direction:column;gap:2px;max-height:260px;overflow:auto;padding:2px}
 .dsh-fk-pickrow{display:flex;align-items:center;gap:8px;min-height:32px;padding:4px 8px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;text-align:left;cursor:pointer}
 .dsh-fk-pickrow:hover{background:var(--dsh-fk-hover)}
