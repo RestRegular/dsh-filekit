@@ -169,8 +169,12 @@
           settingsIntro: '这些设置只影响本机的 FileKit 界面。',
           settingsShowHidden: '显示隐藏文件',
           settingsShowHiddenHint: '在文件树和 FileKit 中显示以 . 开头的文件与目录。',
-          settingsOpenEditor: '点击文件直接进入编辑',
-          settingsOpenEditorHint: '默认单击文件打开预览；开启后改为直接打开编辑器。',
+          settingsSystemClick: '系统文件树单击',
+          settingsSystemClickHint: '单击右侧「工作区文件」树中的文件时打开的界面。',
+          settingsFilekitClick: 'FileKit 文件树单击',
+          settingsFilekitClickHint: '单击 FileKit 文件管理页中的文件时打开的界面。',
+          clickPreview: '预览',
+          clickEditor: '编辑',
           settingsNotify: '变更后提醒 Agent',
           settingsNotifyHint: '关闭后不再向当前会话注入变更提醒，可节省上下文 token。',
           settingsConfirmDelete: '删除前确认',
@@ -317,8 +321,12 @@
           settingsIntro: 'These settings only affect FileKit in this browser.',
           settingsShowHidden: 'Show hidden files',
           settingsShowHiddenHint: 'Show files and folders whose names start with a dot.',
-          settingsOpenEditor: 'Open files in editor on click',
-          settingsOpenEditorHint: 'By default a single click opens the preview; turn on to open the editor instead.',
+          settingsSystemClick: 'System file tree click',
+          settingsSystemClickHint: 'What a single click opens in the right-sidebar workspace files tree.',
+          settingsFilekitClick: 'FileKit file tree click',
+          settingsFilekitClickHint: 'What a single click opens in the FileKit file manager page.',
+          clickPreview: 'Preview',
+          clickEditor: 'Editor',
           settingsNotify: 'Tell the Agent after changes',
           settingsNotifyHint: 'Off stops injecting workspace-change notices into the current session, saving context tokens.',
           settingsConfirmDelete: 'Confirm before deleting',
@@ -399,7 +407,8 @@
       const SETTINGS_KEY = 'dsh-filekit.settings.v1';
       const DEFAULT_SETTINGS = Object.freeze({
         showHidden: true,
-        openInEditor: false,
+        systemClick: 'preview',
+        filekitClick: 'preview',
         notifyAgent: true,
         confirmDelete: true,
         autoRefreshSeconds: 0,
@@ -420,6 +429,11 @@
         return AUTO_REFRESH_CHOICES.includes(number) ? number : DEFAULT_SETTINGS.autoRefreshSeconds;
       }
 
+      /** Click behaviour is either the built-in preview or the FileKit editor. */
+      function normalizeClickMode(value) {
+        return value === 'editor' ? 'editor' : 'preview';
+      }
+
       function readSettings() {
         const next = { ...DEFAULT_SETTINGS };
         try {
@@ -428,7 +442,11 @@
           const parsed = JSON.parse(raw);
           if (typeof parsed !== 'object' || parsed === null) return next;
           if (typeof parsed.showHidden === 'boolean') next.showHidden = parsed.showHidden;
-          if (typeof parsed.openInEditor === 'boolean') next.openInEditor = parsed.openInEditor;
+          // Migrate the short-lived single `openInEditor` flag (0.2.7/0.2.8)
+          // into the two independent per-tree click settings.
+          const legacy = typeof parsed.openInEditor === 'boolean' ? (parsed.openInEditor ? 'editor' : 'preview') : undefined;
+          next.systemClick = normalizeClickMode(parsed.systemClick ?? legacy);
+          next.filekitClick = normalizeClickMode(parsed.filekitClick ?? legacy);
           if (typeof parsed.notifyAgent === 'boolean') next.notifyAgent = parsed.notifyAgent;
           if (typeof parsed.confirmDelete === 'boolean') next.confirmDelete = parsed.confirmDelete;
           next.autoRefreshSeconds = normalizeAutoRefresh(parsed.autoRefreshSeconds);
@@ -2378,6 +2396,8 @@
                   if (entry.kind === 'directory') {
                     setCwd(entry.path);
                     setMenu(null);
+                  } else if (settingsSnapshot.filekitClick === 'editor') {
+                    loadEditor(entry.path);
                   } else {
                     openPreview(entry.path);
                   }
@@ -2387,6 +2407,7 @@
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     if (entry.kind === 'directory') setCwd(entry.path);
+                    else if (settingsSnapshot.filekitClick === 'editor') loadEditor(entry.path);
                     else openPreview(entry.path);
                   }
                 },
@@ -3025,14 +3046,14 @@
                     title: entry.path,
                     onClick: () => {
                       if (isDir) toggleDir(entry.path);
-                      else if (settingsSnapshot.openInEditor === true) openEditorTab(sessionId, entry.path);
+                      else if (settingsSnapshot.systemClick === 'editor') openEditorTab(sessionId, entry.path);
                       else openPreview(entry.path);
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         if (isDir) toggleDir(entry.path);
-                        else if (settingsSnapshot.openInEditor === true) openEditorTab(sessionId, entry.path);
+                        else if (settingsSnapshot.systemClick === 'editor') openEditorTab(sessionId, entry.path);
                         else openPreview(entry.path);
                       }
                     },
@@ -3453,12 +3474,60 @@
             checked: snapshot.showHidden,
             onChange: (value) => updateSettings({ showHidden: value }),
           }),
-          h(ToggleRow, {
-            title: t('settingsOpenEditor'),
-            hint: t('settingsOpenEditorHint'),
-            checked: snapshot.openInEditor,
-            onChange: (value) => updateSettings({ openInEditor: value }),
-          }),
+          h(
+            'div',
+            { className: 'dsh-fk-setrow' },
+            h(
+              'div',
+              { className: 'dsh-fk-settext' },
+              h('span', { className: 'dsh-fk-settitle' }, t('settingsSystemClick')),
+              h('span', { className: 'dsh-fk-sethint' }, t('settingsSystemClickHint')),
+            ),
+            h(
+              'div',
+              { className: 'dsh-fk-segmented', role: 'group' },
+              ['preview', 'editor'].map((mode) =>
+                h(
+                  'button',
+                  {
+                    key: mode,
+                    type: 'button',
+                    className: 'dsh-fk-segment',
+                    'data-on': snapshot.systemClick === mode,
+                    onClick: () => updateSettings({ systemClick: mode }),
+                  },
+                  t(mode === 'preview' ? 'clickPreview' : 'clickEditor'),
+                ),
+              ),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'dsh-fk-setrow' },
+            h(
+              'div',
+              { className: 'dsh-fk-settext' },
+              h('span', { className: 'dsh-fk-settitle' }, t('settingsFilekitClick')),
+              h('span', { className: 'dsh-fk-sethint' }, t('settingsFilekitClickHint')),
+            ),
+            h(
+              'div',
+              { className: 'dsh-fk-segmented', role: 'group' },
+              ['preview', 'editor'].map((mode) =>
+                h(
+                  'button',
+                  {
+                    key: mode,
+                    type: 'button',
+                    className: 'dsh-fk-segment',
+                    'data-on': snapshot.filekitClick === mode,
+                    onClick: () => updateSettings({ filekitClick: mode }),
+                  },
+                  t(mode === 'preview' ? 'clickPreview' : 'clickEditor'),
+                ),
+              ),
+            ),
+          ),
           h(ToggleRow, {
             title: t('settingsNotify'),
             hint: t('settingsNotifyHint'),
