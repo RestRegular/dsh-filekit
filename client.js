@@ -170,7 +170,7 @@
           settingsShowHidden: '显示隐藏文件',
           settingsShowHiddenHint: '在文件树和 FileKit 中显示以 . 开头的文件与目录。',
           settingsOpenEditor: '点击文件直接进入编辑',
-          settingsOpenEditorHint: '开启后单击文件直接打开编辑器；关闭则打开系统预览。',
+          settingsOpenEditorHint: '默认单击文件打开预览；开启后改为直接打开编辑器。',
           settingsNotify: '变更后提醒 Agent',
           settingsNotifyHint: '关闭后不再向当前会话注入变更提醒，可节省上下文 token。',
           settingsConfirmDelete: '删除前确认',
@@ -318,7 +318,7 @@
           settingsShowHidden: 'Show hidden files',
           settingsShowHiddenHint: 'Show files and folders whose names start with a dot.',
           settingsOpenEditor: 'Open files in editor on click',
-          settingsOpenEditorHint: 'On: a single click opens the editor; off: it opens the built-in preview.',
+          settingsOpenEditorHint: 'By default a single click opens the preview; turn on to open the editor instead.',
           settingsNotify: 'Tell the Agent after changes',
           settingsNotifyHint: 'Off stops injecting workspace-change notices into the current session, saving context tokens.',
           settingsConfirmDelete: 'Confirm before deleting',
@@ -399,7 +399,7 @@
       const SETTINGS_KEY = 'dsh-filekit.settings.v1';
       const DEFAULT_SETTINGS = Object.freeze({
         showHidden: true,
-        openInEditor: true,
+        openInEditor: false,
         notifyAgent: true,
         confirmDelete: true,
         autoRefreshSeconds: 0,
@@ -2379,7 +2379,7 @@
                     setCwd(entry.path);
                     setMenu(null);
                   } else {
-                    loadEditor(entry.path);
+                    openPreview(entry.path);
                   }
                 },
                 onContextMenu: (event) => openRowMenu(event, entry),
@@ -2387,7 +2387,7 @@
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     if (entry.kind === 'directory') setCwd(entry.path);
-                    else loadEditor(entry.path);
+                    else openPreview(entry.path);
                   }
                 },
                 title: entry.path,
@@ -3025,15 +3025,15 @@
                     title: entry.path,
                     onClick: () => {
                       if (isDir) toggleDir(entry.path);
-                      else if (settingsSnapshot.openInEditor === false) openPreview(entry.path);
-                      else openEditorTab(sessionId, entry.path);
+                      else if (settingsSnapshot.openInEditor === true) openEditorTab(sessionId, entry.path);
+                      else openPreview(entry.path);
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         if (isDir) toggleDir(entry.path);
-                        else if (settingsSnapshot.openInEditor === false) openPreview(entry.path);
-                        else openEditorTab(sessionId, entry.path);
+                        else if (settingsSnapshot.openInEditor === true) openEditorTab(sessionId, entry.path);
+                        else openPreview(entry.path);
                       }
                     },
                     onContextMenu: (event) => openEntryMenu(event, entry),
