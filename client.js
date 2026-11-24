@@ -169,6 +169,8 @@
           settingsIntro: '这些设置只影响本机的 FileKit 界面。',
           settingsShowHidden: '显示隐藏文件',
           settingsShowHiddenHint: '在文件树和 FileKit 中显示以 . 开头的文件与目录。',
+          settingsOpenEditor: '点击文件直接进入编辑',
+          settingsOpenEditorHint: '开启后单击文件直接打开编辑器；关闭则打开系统预览。',
           settingsNotify: '变更后提醒 Agent',
           settingsNotifyHint: '关闭后不再向当前会话注入变更提醒，可节省上下文 token。',
           settingsConfirmDelete: '删除前确认',
@@ -315,6 +317,8 @@
           settingsIntro: 'These settings only affect FileKit in this browser.',
           settingsShowHidden: 'Show hidden files',
           settingsShowHiddenHint: 'Show files and folders whose names start with a dot.',
+          settingsOpenEditor: 'Open files in editor on click',
+          settingsOpenEditorHint: 'On: a single click opens the editor; off: it opens the built-in preview.',
           settingsNotify: 'Tell the Agent after changes',
           settingsNotifyHint: 'Off stops injecting workspace-change notices into the current session, saving context tokens.',
           settingsConfirmDelete: 'Confirm before deleting',
@@ -395,6 +399,7 @@
       const SETTINGS_KEY = 'dsh-filekit.settings.v1';
       const DEFAULT_SETTINGS = Object.freeze({
         showHidden: true,
+        openInEditor: true,
         notifyAgent: true,
         confirmDelete: true,
         autoRefreshSeconds: 0,
@@ -423,6 +428,7 @@
           const parsed = JSON.parse(raw);
           if (typeof parsed !== 'object' || parsed === null) return next;
           if (typeof parsed.showHidden === 'boolean') next.showHidden = parsed.showHidden;
+          if (typeof parsed.openInEditor === 'boolean') next.openInEditor = parsed.openInEditor;
           if (typeof parsed.notifyAgent === 'boolean') next.notifyAgent = parsed.notifyAgent;
           if (typeof parsed.confirmDelete === 'boolean') next.confirmDelete = parsed.confirmDelete;
           next.autoRefreshSeconds = normalizeAutoRefresh(parsed.autoRefreshSeconds);
@@ -3019,13 +3025,15 @@
                     title: entry.path,
                     onClick: () => {
                       if (isDir) toggleDir(entry.path);
-                      else openPreview(entry.path);
+                      else if (settingsSnapshot.openInEditor === false) openPreview(entry.path);
+                      else openEditorTab(sessionId, entry.path);
                     },
                     onKeyDown: (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         if (isDir) toggleDir(entry.path);
-                        else openPreview(entry.path);
+                        else if (settingsSnapshot.openInEditor === false) openPreview(entry.path);
+                        else openEditorTab(sessionId, entry.path);
                       }
                     },
                     onContextMenu: (event) => openEntryMenu(event, entry),
@@ -3444,6 +3452,12 @@
             hint: t('settingsShowHiddenHint'),
             checked: snapshot.showHidden,
             onChange: (value) => updateSettings({ showHidden: value }),
+          }),
+          h(ToggleRow, {
+            title: t('settingsOpenEditor'),
+            hint: t('settingsOpenEditorHint'),
+            checked: snapshot.openInEditor,
+            onChange: (value) => updateSettings({ openInEditor: value }),
           }),
           h(ToggleRow, {
             title: t('settingsNotify'),
